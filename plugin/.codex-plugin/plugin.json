@@ -1,0 +1,10 @@
+{
+  "name": "local-code-review",
+  "version": "3.3.0",
+  "description": "通用本地审查：会话修改、编号意见、修改方案与用户确认。每次调用使用当前对话项目，互相隔离。",
+  "author": {
+    "name": "Local workspace"
+  },
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "local-review-tools",
+  "interface": {"displayName": "Local Review"},
+  "plugins": [
+    {
+      "name": "local-code-review",
+      "source": {"source": "local", "path": "./plugin"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    }
+  ]
+}

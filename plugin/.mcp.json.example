@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "local_code_review": {
+      "command": "<PYTHON>",
+      "args": [
+        "<REPOSITORY>\\server.py",
+        "--mcp"
+      ],
+      "cwd": "<REPOSITORY>",
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

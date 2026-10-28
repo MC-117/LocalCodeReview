@@ -1,0 +1,10 @@
+data/
+.test-artifacts/
+__pycache__/
+tests/__pycache__/
+
+plugin/.mcp.json
+release/
+*.spec
+
+.code-review/
