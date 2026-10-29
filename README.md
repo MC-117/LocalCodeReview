@@ -6,6 +6,18 @@
 
 A standalone Codex Desktop plugin for Windows and Python 3.12+. No additional runtime packages are required; Pygments is bundled under its BSD license. The installation is independent of the project being reviewed: each tool call specifies the current project's root. The plugin has no Git commit, rollback, or patch application endpoints.
 
+### Dark theme preview
+
+The MCP Apps component in dark mode, captured with an isolated sample project in a local protocol test host. Chat-message support is enabled, so **Submit feedback** appears in the top-right corner alongside the native-file action. The images show unified and side-by-side code views; sample code and group names are illustrative.
+
+**Unified view**
+
+![English dark theme — unified code review](docs/images/dark-en-single.png)
+
+**Side-by-side comparison**
+
+![English dark theme — side-by-side comparison](docs/images/dark-en-split.png)
+
 ### Usage
 
 Clone the source into a directory of your choice. Codex maintains its installed plugin cache separately; review data stays in each project's `.code-review/` directory.
@@ -132,6 +144,18 @@ Capture is invoked by the assistant. There is no always-on hook intercepting all
 Local Review · 通用本地审查
 
 独立的 Codex 桌面插件，Windows + Python 3.12 以上，无需另装依赖，随附 BSD 许可的 Pygments。安装位置与项目无关；每次调用明确传入当前对话的项目根目录，不默认绑定仓库。无提交、回滚或应用代码补丁接口。
+
+### 深色模式预览
+
+以下为 MCP Apps 组件的深色截图，使用本地协议测试宿主与隔离示例项目。宿主启用了对话消息能力，右上角显示**“提交意见给助手”**，代码区也提供原生文件入口。图片展示单页和并排视图；示例代码与分组名称仅用于演示。
+
+**单页查看**
+
+![中文深色模式 — 单页代码审查](docs/images/dark-zh-single.png)
+
+**并排对比**
+
+![中文深色模式 — 并排代码对比](docs/images/dark-zh-split.png)
 
 ### 使用
 
