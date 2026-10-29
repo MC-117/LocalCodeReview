@@ -26,7 +26,7 @@ class FullCodeViewer {
         const last=anchors.at(-1);
         if(last&&range.start<=last.end)last.end=Math.max(last.end,range.end);else anchors.push({...range});
       }
-      this.blocks=anchors.map((r,i)=>({index:i,label:`历史匹配 · 当前 ${r.start+1}–${r.end} 行`}));
+      this.blocks=anchors.map((r,i)=>({index:i,label:I18n.t("历史匹配 · 当前 {0}–{1} 行", [r.start+1, r.end])}));
       lines.forEach((line,i)=>{
         const block=anchors.findIndex(r=>i>=r.start&&i<r.end),kind=block>=0?'historical':'';
         rows.push(mode==='split'?`<tr${block<0?'':` data-change="${block}"`}>${number(null)}${source('','gap')}${number(i+1)}${source(line,kind,b.htmlLines?.[i],i+1)}</tr>`:single(null,i+1,line,kind,block<0?null:block));
@@ -34,7 +34,7 @@ class FullCodeViewer {
     }else{
       for(const [tag,a0,a1,b0,b1] of data.ops){
         const block=tag==='equal'?null:this.blocks.length;
-        if(block!==null)this.blocks.push({index:block,label:`${this.blocks.length+1}. 旧 ${a0+1}–${Math.max(a0+1,a1)} / 新 ${b0+1}–${Math.max(b0+1,b1)} 行`});
+        if(block!==null)this.blocks.push({index:block,label:I18n.t("{0}. 旧 {1}–{2} / 新 {3}–{4} 行", [this.blocks.length+1, a0+1, Math.max(a0+1,a1), b0+1, Math.max(b0+1,b1)])});
         if(mode==='split'){
           for(let i=0;i<Math.max(a1-a0,b1-b0);i++)rows.push(paired(a0+i<a1?a0+i+1:null,b0+i<b1?b0+i+1:null,a0+i<a1?a.lines[a0+i]:'',b0+i<b1?b.lines[b0+i]:'',tag,block));
         }else if(tag==='equal'){
@@ -45,13 +45,13 @@ class FullCodeViewer {
         }
       }
     }
-    const warning=[...data.warnings];
-    if(mode!=='current'&&!a.available)warning.push('旧侧不可用：'+a.note);
-    if(!b.available)warning.push('当前侧不可预览：'+b.note);
-    const label=side=>esc(side.label)+(side.exists?'':' · 文件不存在');
-    const heads=mode==='split'?`<div class="viewer-labels split"><span>${label(a)}</span><span>${label(b)}</span></div>`:`<div class="viewer-labels"><span>${mode==='current'?label(b):a.available?label(a)+' → '+label(b):label(b)+' · 历史匹配定位'}</span><span>完整文件 · ${b.lines.length} 行</span></div>`;
-    const history=data.records.length?`<details class="history-patches"><summary>原始会话补丁 · ${data.records.length} 次</summary><div class="history-body">${data.records.map(r=>`<section><div class="patch-heading"><span>第 ${r.turn} 轮 · ${esc(r.action)}${r.confirmed?'':' · 无成功回执'}</span></div><pre>${esc(r.patch)}</pre></section>`).join('')}</div></details>`:'';
-    this.root.innerHTML=(warning.length?`<div class="comparison-note">${warning.map(esc).join(' ')}</div>`:'')+history+heads+`<div class="viewer-scroll" tabindex="0" aria-label="完整代码"><table class="diff full-file ${mode==='split'?'split-table':''}"><tbody>${rows.join('')}</tbody></table>${rows.length?'':`<div class="empty">${b.available?(b.exists?'空文件':'当前侧文件不存在'):'二进制或过大文件，仅提供摘要'}</div>`}</div>`;
+    const warning=data.warnings.map(I18n.system);
+    if(mode!=='current'&&!a.available)warning.push(I18n.t("旧侧不可用：")+I18n.system(a.note));
+    if(!b.available)warning.push(I18n.t("当前侧不可预览：")+I18n.system(b.note));
+    const label=side=>esc(I18n.system(side.label))+(side.exists?'':I18n.t(" · 文件不存在"));
+    const heads=mode==='split'?`<div class="viewer-labels split"><span>${label(a)}</span><span>${label(b)}</span></div>`:I18n.t("<div class=\"viewer-labels\"><span>{0}</span><span>完整文件 · {1} 行</span></div>", [mode==='current'?label(b):a.available?label(a)+' → '+label(b):label(b)+I18n.t(" · 历史匹配定位"), b.lines.length]);
+    const history=data.records.length?I18n.t("<details class=\"history-patches\"><summary>原始会话补丁 · {0} 次</summary><div class=\"history-body\">{1}</div></details>", [data.records.length, data.records.map(r=>I18n.t("<section><div class=\"patch-heading\"><span>第 {0} 轮 · {1}{2}</span></div><pre>{3}</pre></section>", [r.turn, esc(r.action), r.confirmed?'':I18n.t(" · 无成功回执"), esc(r.patch)])).join('')]):'';
+    this.root.innerHTML=(warning.length?`<div class="comparison-note">${warning.map(esc).join(' ')}</div>`:'')+history+heads+I18n.t("<div class=\"viewer-scroll\" tabindex=\"0\" aria-label=\"完整代码\"><table class=\"diff full-file {0}\"><tbody>{1}</tbody></table>{2}</div>", [mode==='split'?'split-table':'', rows.join(''), rows.length?'':`<div class="empty">${b.available?(b.exists?I18n.t("空文件"):I18n.t("当前侧文件不存在")):I18n.t("二进制或过大文件，仅提供摘要")}</div>`]);
     this.scroll=this.root.querySelector('.viewer-scroll');
     this.blockRows=this.blocks.map((_,i)=>this.root.querySelector(`[data-change="${i}"]`));
     this.onScroll=()=>this.schedulePosition();
@@ -62,6 +62,16 @@ class FullCodeViewer {
     this.index=this.blocks.length?Math.max(0,Math.min(previous,this.blocks.length-1)):-1;
     this.markPosition();this.onProgress(this.blocks,this.index);
     if(same&&previous>=0)this.jump(this.index);
+  }
+  relocalize(){
+    const top=this.scroll?.scrollTop||0,left=this.scroll?.scrollLeft||0,index=this.index;
+    const anchors=[...this.root.querySelectorAll('.annotation-anchor .source[data-source-line]')].map(e=>[e.dataset.sourceLine,e.dataset.side]);
+    const historyOpen=this.root.querySelector('.history-patches')?.open;
+    this.render(this.data,this.mode);
+    if(this.scroll){this.scroll.scrollTop=top;this.scroll.scrollLeft=left;this.pinned={top:this.scroll.scrollTop};}
+    this.index=index;this.markPosition();this.onProgress(this.blocks,this.index);
+    for(const [line,side] of anchors)this.root.querySelector(`.source[data-source-line="${line}"][data-side="${side}"]`)?.closest('tr').classList.add('annotation-anchor');
+    const history=this.root.querySelector('.history-patches');if(history)history.open=historyOpen;
   }
   markPosition(){
     this.root.querySelector('.focused-change')?.classList.remove('focused-change');

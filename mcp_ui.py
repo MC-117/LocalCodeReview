@@ -1,5 +1,7 @@
 """Offline MCP Apps resource and the narrowly scoped UI data interface."""
 from pathlib import Path
+import json
+from review_core import atomic_json
 
 BASE = Path(__file__).resolve().parent
 UI_URI = 'ui://local-code-review/v3/review.html'
@@ -11,7 +13,7 @@ def ui_resource():
     html = html.replace('<head>', '<head><meta name="review-transport" content="mcp">')
     css = (BASE / 'web/style.css').read_text(encoding='utf-8')
     html = html.replace('<link rel="stylesheet" href="/style.css">', '<style>' + css + '</style>')
-    for name in ('bridge.js', 'viewer.js', 'app.js'):
+    for name in ('i18n.js', 'bridge.js', 'viewer.js', 'app.js'):
         source = (BASE / 'web' / name).read_text(encoding='utf-8')
         # Inline only trusted local assets; source files can contain literal end tags.
         source = source.replace('</script', '<\\/script')
@@ -28,7 +30,7 @@ def ui_resource():
 
 
 READ_ROUTES = ('meta', 'state', 'session', 'file', 'export', 'changes', 'compare')
-WRITE_ROUTES = ('item', 'batch', 'guide', 'selection', 'snapshot')
+WRITE_ROUTES = ('preferences', 'item', 'batch', 'guide', 'selection', 'snapshot')
 
 
 def ui_request(app, route, body=None, view=None, standalone=False):
@@ -44,6 +46,22 @@ def ui_request(app, route, body=None, view=None, standalone=False):
                     'sessions': [{k: v for k, v in s.items() if k != 'path'} for s in sessions],
                     'defaultSession': query.get('session'), 'reviewScope': selected, 'snapshots': store.snapshots(),
                     'rounds': store.rounds(selected.get('threadId'))}
+        if route == 'preferences':
+            # UI settings are separate from review revisions, approvals and history.
+            path = store.data / 'preferences.json'
+            if not isinstance(body, dict) or set(body) - {'language'}:
+                raise ValueError('语言选项无效')
+            if body:
+                if body.get('language') not in ('auto', 'zh-CN', 'en'):
+                    raise ValueError('语言选项无效')
+                with store.writing():
+                    atomic_json(path, {'language': body['language']})
+            try:
+                value = json.loads(path.read_text(encoding='utf-8'))
+                language = value.get('language', 'auto') if isinstance(value, dict) else 'auto'
+            except (OSError, ValueError):
+                language = 'auto'
+            return {'language': language if language in ('auto', 'zh-CN', 'en') else 'auto'}
         if route == 'state':
             return store.review_view()
         if route == 'session':

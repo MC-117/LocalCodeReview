@@ -55,6 +55,8 @@ class App:
                         if view_token and view_token not in app.views:
                             raise ValueError('审查范围已失效，请重新打开审查')
                         return self.send(200, ui_request(app, 'meta', view=app.views.get(view_token), standalone=not view_token))
+                    if u.path == '/api/preferences':
+                        return self.send(200, ui_request(app, 'preferences'))
                     if u.path == '/api/state':
                         return self.send(200, app.store.review_view())
                     if u.path == '/api/session':
@@ -64,9 +66,9 @@ class App:
                         return self.send(200, app.store.read_file(parse_qs(u.query)['path'][0]))
                     if u.path == '/api/export':
                         return self.send(200, app.store.export(), 'text/markdown; charset=utf-8')
-                    assets = {'/': 'index.html', '/app.js': 'app.js', '/bridge.js': 'bridge.js', '/viewer.js': 'viewer.js', '/style.css': 'style.css'}
+                    assets = {'/': 'index.html', '/i18n.js': 'i18n.js', '/app.js': 'app.js', '/bridge.js': 'bridge.js', '/viewer.js': 'viewer.js', '/style.css': 'style.css'}
                     if u.path in assets:
-                        mime = {'/': 'text/html', '/app.js': 'text/javascript', '/bridge.js': 'text/javascript', '/viewer.js': 'text/javascript', '/style.css': 'text/css'}[u.path]
+                        mime = {'/': 'text/html', '/i18n.js': 'text/javascript', '/app.js': 'text/javascript', '/bridge.js': 'text/javascript', '/viewer.js': 'text/javascript', '/style.css': 'text/css'}[u.path]
                         return self.send(200, (BASE / 'web' / assets[u.path]).read_bytes(), mime + '; charset=utf-8')
                     self.send(404, {'error': '页面不存在'})
                 except (ValueError, KeyError, OSError, subprocess.SubprocessError) as e:
@@ -82,7 +84,9 @@ class App:
                         raise ValueError('请求大小无效')
                     body = json.loads(self.rfile.read(length))
                     with app.store.lock:
-                        if self.path == '/api/changes':
+                        if self.path == '/api/preferences':
+                            result = ui_request(app, 'preferences', body)
+                        elif self.path == '/api/changes':
                             result = app.store.changes(body)
                         elif self.path == '/api/compare':
                             result = app.store.compare_file(body['query'], body['path'], body.get('recordIds'))

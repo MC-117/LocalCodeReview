@@ -11,6 +11,7 @@ const base=path.resolve(__dirname,'..');
   page.on('pageerror',e=>errors.push(e.message));
   await page.setContent('<!doctype html><meta charset="utf-8"><div id="status"></div><button id="prev">上一处</button><button id="next">下一处</button><div id="code" class="code" style="height:420px"></div>');
   await page.addStyleTag({content:await fs.readFile(path.join(base,'web/style.css'),'utf8')});
+  await page.addScriptTag({content:await fs.readFile(path.join(base,'web/i18n.js'),'utf8')});
   await page.addScriptTag({content:"const esc=v=>String(v??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));\n"+await fs.readFile(path.join(base,'web/viewer.js'),'utf8')});
   await page.evaluate(()=>{
    window.viewer=new FullCodeViewer(document.getElementById('code'),(blocks,index)=>{

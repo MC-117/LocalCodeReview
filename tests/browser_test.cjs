@@ -14,7 +14,7 @@ const base=path.resolve(__dirname,'..');
  try{
   const [first]=await once(lines,'line'),source=JSON.parse(first),profile=path.join(base,'.test-artifacts','browser-profiles',Date.now().toString());
   await fs.mkdir(profile,{recursive:true});
-  browser=await chromium.launchPersistentContext(profile,{headless:true,executablePath:process.argv[3]||'C:/Program Files/Google/Chrome/Application/chrome.exe',viewport:{width:1280,height:900}});
+  browser=await chromium.launchPersistentContext(profile,{headless:true,locale:'zh-CN',executablePath:process.argv[3]||'C:/Program Files/Google/Chrome/Application/chrome.exe',viewport:{width:1280,height:900}});
   const page=await browser.newPage(),errors=[],requests=[];browser.on('request',r=>requests.push(r.url()));page.on('pageerror',e=>errors.push(e.message));
   const state=async()=>await(await fetch(source.url+'api/state')).json();
   const saved=async()=>await page.locator('#saveState').filter({hasText:'已自动保存'}).waitFor();

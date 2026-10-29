@@ -60,6 +60,26 @@ class McpUiTests(unittest.TestCase):
         self.assertIn('error', replies[6])
         self.assertNotIn('http://', process.stderr)
 
+    def test_language_preferences_are_narrow_and_do_not_change_review_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            app=App(ReviewStore(root),None)
+            before=ui_request(app,'state')
+            self.assertEqual(ui_request(app,'preferences'),{'language':'auto'})
+            for language in ('en','zh-CN','auto'):
+                self.assertEqual(ui_request(app,'preferences',{'language':language}),{'language':language})
+                fresh=App(ReviewStore(root),None)
+                self.assertEqual(ui_request(fresh,'preferences'),{'language':language})
+                self.assertEqual(ui_request(app,'state'),before)
+            for body in ({'language':'fr'},{'language':None},{'language':[]},{'language':'en','path':'../outside'},['en']):
+                with self.assertRaises((ValueError,TypeError)):
+                    ui_request(app,'preferences',body)
+            isolated=App(ReviewStore(root/'other'),None)
+            self.assertEqual(ui_request(isolated,'preferences'),{'language':'auto'})
+            self.assertFalse((app.store.data/'history').exists())
+            (app.store.data/'preferences.json').write_text('not json',encoding='utf-8')
+            self.assertEqual(ui_request(app,'preferences'),{'language':'auto'})
+
     def test_ui_cannot_confirm_plan_or_escape_project(self):
         scratch = BASE / '.test-artifacts' / 'mcp-ui-tests'
         scratch.mkdir(parents=True, exist_ok=True)
