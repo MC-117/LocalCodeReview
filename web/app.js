@@ -124,7 +124,7 @@ async function refresh(){
   if(q.source==='session'&&!q.session)throw Error(I18n.t("没有可读会话，请先记录快照或选择其他来源。"));if(q.source==='snapshot'&&!q.snapshot)throw Error(I18n.t("请先记录快照。"));if(q.start&&q.end&&Number(q.start)>Number(q.end))throw Error(I18n.t("起始轮次不能大于结束轮次。"));
   if(q.source==='round'&&!q.round)throw Error(I18n.t("还没有已完成的单轮快照，请让助手在修改前后记录。"));
   const old=dirty?structuredClone(receipts):null,oldSeen=seen,selected=currentGroup()?.key;busy=true;renderSummary();
-  try{const [c,s]=await Promise.all([api('changes',q),api('state')]);if(dirty&&s.revision!==baseRevision)throw Error(I18n.t("其他窗口已更新记录；本地草稿保留，请先核对，或在选项中重新读取已保存记录。"));
+  try{const [c,s]=await Promise.all([api('changes',q),api('state',{query:q})]);if(dirty&&s.revision!==baseRevision)throw Error(I18n.t("其他窗口已更新记录；本地草稿保留，请先核对，或在选项中重新读取已保存记录。"));
     changes=c;state=s;scope=q;baseRevision=s.revision;seen=Object.fromEntries(c.records.map(r=>[r.path,q.source==='round'?r.afterHash:r.currentHash]));buildReceipts();
     if(old)for(const r of receipts){const previous=old.find(x=>x.groupKey===r.groupKey);if(previous&&oldSeen[r.refs[0].path]===seen[r.refs[0].path]&&!r.stale){r.status=previous.status;r.confirmApproval=previous.confirmApproval;}else if(previous&&!r.id){r.status='pending';r.stale=true;r.confirmApproval=false;}}
     buildGroups(selected);scopeExplanation();$('notice').hidden=true;$('scopeLabel').textContent=describe(scope)+I18n.t(" · {0} 文件", [allPaths().length]);
@@ -235,7 +235,7 @@ async function init(){
   if(ReviewHost.embedded&&ReviewHost.canMessage){$('copyLocation').textContent=I18n.t("当前文件（原生）");$('copyLocation').title=I18n.t("查看当前文件；当前审查范围的 diff 请使用跳转 diff");}
   bind('expandReview','click',()=>ReviewHost.fullscreen());
   bind('sendFeedback','click',submitFeedback);
-  meta=await api('meta');state=await api('state');$('projectName').textContent=meta.root.split(/[\\/]/).pop();$('session').innerHTML=meta.sessions.map(s=>`<option value="${s.id}">${esc(new Date(s.time).toLocaleString(I18n.locale))}</option>`).join('');snapshots();
+  meta=await api('meta');state=await api('state',{query:meta.reviewScope?.query||{}});$('projectName').textContent=meta.root.split(/[\\/]/).pop();$('session').innerHTML=meta.sessions.map(s=>`<option value="${s.id}">${esc(new Date(s.time).toLocaleString(I18n.locale))}</option>`).join('');snapshots();
   $('round').innerHTML=(meta.rounds||[]).filter(r=>r.status==='completed').map(r=>I18n.t("<option value=\"{0}\">{1} · {2} 文件</option>", [r.id, esc(r.label), r.changedFiles])).join('');
   for(const id of ['session','start','end'])bind(id,'change',()=>{scopeTurnId='';});
   if(meta.reviewScope?.query){applyScope(meta.reviewScope.query);await sourceChanged();await refresh();}
@@ -274,6 +274,6 @@ async function init(){
   document.addEventListener('click',e=>{if(!$('moreMenu').contains(e.target))$('moreMenu').open=false;});
   window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
   if(dirty)scheduleAutosave();
-  setInterval(async()=>{if(document.hidden||busy)return;try{const fresh=await api('state');state.workflow=fresh.workflow;for(const r of receipts){const saved=fresh.items.find(i=>i.id===r.id);if(saved?.stale&&!r.confirmApproval)r.stale=true;}if(fresh.revision===baseRevision){state.annotations=fresh.annotations;renderEditor();}renderItems();$('lastCheck').textContent=I18n.t("结论检查于 ")+new Date().toLocaleTimeString(I18n.locale);}catch{$('lastCheck').textContent=I18n.t("本地服务未连接");}},15000);
+  setInterval(async()=>{if(document.hidden||busy)return;try{const fresh=await api('state',{query:scope||{}});state.workflow=fresh.workflow;for(const r of receipts){const saved=fresh.items.find(i=>i.id===r.id);if(saved?.stale&&!r.confirmApproval)r.stale=true;}if(fresh.revision===baseRevision){state.annotations=fresh.annotations;renderEditor();}renderItems();$('lastCheck').textContent=I18n.t("结论检查于 ")+new Date().toLocaleTimeString(I18n.locale);}catch{$('lastCheck').textContent=I18n.t("本地服务未连接");}},15000);
 }
 init().catch(fail);

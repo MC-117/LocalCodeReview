@@ -145,6 +145,55 @@ class RoundTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.store.save_item({**item,'revision':state['revision']})
         self.assertEqual(self.store.compare_file(q,'src/example.py')['after']['lines'],['value = 2'])
 
+    def test_review_view_returns_only_requested_round_and_its_plan(self):
+        r1 = self.store.begin_round('chat', 'turn-one')
+        self.write('src/example.py', 'value = 2\n')
+        r1 = self.store.finish_round(r1['id']); q1 = self.query(r1)
+        self.log('resume', 'chat', 'turn-two', '2026-10-26T10:05:00Z', '第二轮')
+        r2 = self.store.begin_round('chat'); self.write('src/example.py', 'value = 3\n')
+        r2 = self.store.finish_round(r2['id']); q2 = self.query(r2)
+        state = self.store.save_batch({'revision': 0, 'items': [], 'annotations': [
+            {'text': '只保留第一轮接口意见', 'target': {'kind': 'feature', 'label': '第一轮功能'},
+             'refs': [{'path': 'src/example.py'}], 'scope': q1}
+        ]})
+        annotation1 = state['annotations'][0]
+        state = self.store.save_batch({'revision': state['revision'], 'items': [], 'annotations': [
+            {'text': '第二轮独立意见', 'target': {'kind': 'feature', 'label': '第二轮功能'},
+             'refs': [{'path': 'src/example.py'}], 'scope': q2}
+        ]})
+        annotation2 = state['annotations'][0]
+        state = self.store.save_guide(state['revision'], q1, [
+            {'key': 'first', 'title': '第一轮导览', 'refs': [{'path': 'src/example.py'}]}])
+        state = self.store.save_guide(state['revision'], q2, [
+            {'key': 'second', 'title': '第二轮导览', 'refs': [{'path': 'src/example.py'}]}])
+        self.store.propose_plan(state['revision'], [], '仅处理第一轮意见', [annotation1['id']])
+
+        first = self.store.review_view(round_id=r1['id'])
+        second = self.store.review_view(round_id=r2['id'])
+        index = json.loads((self.store.data / 'reviews.json').read_text(encoding='utf-8'))
+        self.assertNotIn('annotations', index)
+        self.assertNotIn('guides', index)
+        self.assertEqual(len(index['scopes']), 2)
+        self.assertNotEqual(index['scopes'][0]['file'], index['scopes'][1]['file'])
+        self.assertEqual(first['targetRound']['id'], r1['id'])
+        self.assertEqual([n['id'] for n in first['annotations']], [annotation1['id']])
+        self.assertEqual([g['title'] for g in first['guides']], ['第一轮导览'])
+        self.assertEqual(first['workflow']['text'], '仅处理第一轮意见')
+        self.assertEqual(second['targetRound']['id'], r2['id'])
+        self.assertEqual([n['id'] for n in second['annotations']], [annotation2['id']])
+        self.assertEqual([g['title'] for g in second['guides']], ['第二轮导览'])
+        self.assertNotIn('text', second['workflow'])
+        self.assertNotIn('nextAnnotationId', first)
+        app = App(self.store, None)
+        panel = ui_request(app, 'state', {'query': q1}, view={'query': q1})
+        self.assertEqual([n['id'] for n in panel['annotations']], [annotation1['id']])
+        self.assertEqual(panel['workflow']['text'], '仅处理第一轮意见')
+        second_panel = ui_request(app, 'state', {'query': q2}, view={'query': q2})
+        self.assertNotIn('text', second_panel['workflow'])
+
+        with self.assertRaises(ValueError):
+            self.store.review_view(round_id='0' * 20)
+
     def test_ui_scope_freezes_round_and_cannot_collect_or_confirm(self):
         r = self.store.begin_round('chat'); self.write('src/example.py','value = 2\n')
         r = self.store.finish_round(r['id'])
@@ -171,8 +220,26 @@ class RoundTests(unittest.TestCase):
             done = call('review_round',{'action':'finish','roundId':r['id']})
             self.assertEqual(done['status'],'completed')
             sources = call('review_sources',{'threadId':'chat'})
-            self.assertEqual(sources['sessions'][0]['turns'][0]['id'],'turn-one')
+            self.assertEqual(sources['level'],'index')
+            self.assertEqual(sources['sections'][0],{'name':'sessions','count':1})
+            self.assertNotIn('sessions',sources)
+            sessions = call('review_sources',{'threadId':'chat','level':'sessions'})
+            session_id = sessions['items'][0]['id']
+            turn_page = call('review_sources',{'threadId':'chat','level':'turns','sessionId':session_id,'limit':1})
+            self.assertEqual(turn_page['total'],1)
+            self.assertEqual(turn_page['items'][0]['id'],'turn-one')
+            turn = call('review_sources',{'threadId':'chat','level':'turn','sessionId':session_id,'turnId':'turn-one'})
+            self.assertEqual(turn['turn']['label'],'第一轮：脚本修改')
+            rounds = call('review_sources',{'threadId':'chat','level':'rounds'})
+            self.assertEqual(rounds['items'][0]['id'],r['id'])
+            compact_changes = call('review_changes',{'query':{'source':'round','round':r['id']}})
+            self.assertEqual(len(compact_changes['records']),1)
+            self.assertIn('patch',compact_changes['records'][0])
+            self.assertIn('value = 2',compact_changes['records'][0]['patch'])
             opened = call('review_open',{'threadId':'chat','query':{'source':'round','round':'latest'}})
             self.assertEqual(opened['reviewScope']['query']['round'],r['id'])
+            results = call('review_results',{'roundId':r['id']})
+            self.assertEqual(results['targetRound']['id'],r['id'])
+            self.assertEqual(results['annotations'],[])
         finally:
             process.stdin.close();process.wait(timeout=10);process.stdout.close();process.stderr.close()

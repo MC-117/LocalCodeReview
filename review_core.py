@@ -640,22 +640,92 @@ class ReviewStore(RoundStore):
         return {'path': file, 'before': before, 'after': after, 'ops': ops, 'anchors': anchors,
                 'warnings': warnings, 'records': records, 'currentHash': current['hash']}
 
-    def state(self):
-        path = self.data / 'reviews.json'
-        state = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'version': 2, 'revision': 0, 'nextId': 1, 'items': []}
-        for key, default in [('annotations', []), ('nextAnnotationId', 1), ('guides', [])]:
-            state.setdefault(key, default)
-        # The current-state index must stay small. History is read explicitly
-        # through history() for a selected item or annotation.
-        state.pop('history', None)
-        state.setdefault('historySchema', 1)
-        for entry in state.get('items', []) + state.get('annotations', []):
-            entry.pop('history', None)
+    def state(self, scope=None, round_id=None):
+        index = self._review_index()
+        state = {**index, 'items': [], 'annotations': [], 'guides': []}
+        entries = index['scopes']
+        if round_id is not None:
+            entries = [entry for entry in entries
+                       if entry.get('scope', {}).get('source') == 'round'
+                       and entry['scope'].get('round') == round_id]
+        elif scope is not None:
+            key = self._scope_key(scope)
+            entries = [entry for entry in entries if entry['key'] == key]
+        state['scopes'] = entries
+        for entry in entries:
+            path = self.data / entry['file']
+            if not path.exists():
+                continue
+            shard = json.loads(path.read_text(encoding='utf-8'))
+            for key in ('items', 'annotations', 'guides'):
+                state[key].extend(shard.get(key, []))
         return state
+
+    def _review_index(self):
+        index_path = self.data / 'reviews.json'
+        raw = json.loads(index_path.read_text(encoding='utf-8')) if index_path.exists() else {}
+        if raw.get('storageSchema') != 1:
+            raw = self._migrate_review_storage(raw)
+        return {'version': 2, 'storageSchema': 1, 'revision': raw.get('revision', 0),
+                'nextId': raw.get('nextId', 1), 'nextAnnotationId': raw.get('nextAnnotationId', 1),
+                'scopes': raw.get('scopes', [])}
+
+    def _migrate_review_storage(self, raw):
+        """Split development-era review content into one shard per comparison scope."""
+        groups = {}
+        for kind in ('items', 'annotations', 'guides'):
+            for entry in raw.get(kind, []):
+                scope = entry.get('scope') or {}
+                key = digest(scope_identity(scope))[:24]
+                group = groups.setdefault(key, {'key': key, 'scope': scope,
+                                                'file': f'reviews/{key}.json',
+                                                'items': [], 'annotations': [], 'guides': []})
+                clean = dict(entry)
+                clean.pop('history', None)
+                group[kind].append(clean)
+        scopes = []
+        for group in groups.values():
+            shard = {key: group[key] for key in ('scope', 'items', 'annotations', 'guides')}
+            atomic_json(self.data / group['file'], shard)
+            scopes.append({'key': group['key'], 'scope': group['scope'], 'file': group['file'],
+                           'itemCount': len(group['items']), 'annotationCount': len(group['annotations'])})
+        index = {'version': 2, 'storageSchema': 1, 'revision': raw.get('revision', 0),
+                 'nextId': raw.get('nextId', 1), 'nextAnnotationId': raw.get('nextAnnotationId', 1),
+                 'scopes': scopes}
+        atomic_json(self.data / 'reviews.json', index)
+        return index
+
+    def _scope_key(self, scope):
+        return digest(scope_identity(scope))[:24]
+
+    def review_scope_for_key(self, key):
+        if not isinstance(key, str) or not re.fullmatch('[a-f0-9]{24}', key):
+            raise ValueError('审查范围编号无效')
+        entry = next((s for s in self._review_index()['scopes'] if s.get('key') == key), None)
+        if entry is None:
+            raise ValueError('审查范围不存在')
+        return entry['scope']
+
+    def _save_scope(self, state, scope):
+        index_path = self.data / 'reviews.json'
+        index = json.loads(index_path.read_text(encoding='utf-8'))
+        key = self._scope_key(scope)
+        entry = next((s for s in index['scopes'] if s['key'] == key), None)
+        if entry is None:
+            entry = {'key': key, 'scope': scope, 'file': f'reviews/{key}.json'}
+            index['scopes'].append(entry)
+        entry.update(scope=scope, itemCount=len(state['items']),
+                     annotationCount=len(state['annotations']))
+        shard = {'scope': scope, 'items': state['items'],
+                 'annotations': state['annotations'], 'guides': state['guides']}
+        atomic_json(self.data / entry['file'], shard)
+        index.update(revision=state['revision'], nextId=state['nextId'],
+                     nextAnnotationId=state['nextAnnotationId'])
+        atomic_json(index_path, index)
 
     def save_guide(self, revision, query, groups):
         with self.writing():
-            state = self.state()
+            state = self.state(scope=query)
             if revision != state['revision']:
                 raise ValueError('审查数据已更新，请重新读取后整理导览')
             changes = self.changes(query)
@@ -676,8 +746,8 @@ class ReviewStore(RoundStore):
                                  'refs': refs, 'scope': query, 'updated': now()})
             state['guides'] = [g for g in state['guides'] if scope_identity(g['scope']) != scope_identity(query)] + prepared
             state['revision'] += 1
-            atomic_json(self.data / 'reviews.json', state)
-            return self.review_view(locked=True)
+            self._save_scope(state, query)
+            return self.review_view(locked=True, scope=query)
 
     def _merge_annotation(self, state, payload, history_records):
         text = str(payload.get('text', '')).strip()
@@ -734,18 +804,22 @@ class ReviewStore(RoundStore):
             atomic_json(self.data / 'selection.json', value)
         return value
 
-    def context(self, item_id=None):
+    def context(self, item_id=None, history_limit=20, scope=None, round_id=None):
         path = self.data / 'selection.json'
         selection = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
-        state = self.review_view()
+        state = self.review_view(round_id=round_id, scope=scope or selection.get('scope') or {})
         item = next((i for i in state['items'] if i['id'] == (item_id or selection.get('itemId'))), None)
         file = selection.get('path') if item_id is None else None
         if not file and item and item.get('refs'):
             file = item['refs'][0]['path']
         note = next((n for n in state['annotations'] if n['id'] == selection.get('annotationId')), None)
+        try:
+            history_limit = max(1, min(50, int(history_limit or 20)))
+        except (TypeError, ValueError):
+            raise ValueError('historyLimit 必须在 1 到 50 之间')
         selected_history = (
-            self.history('items', item['id']) if item else
-            self.history('annotations', note['id']) if note else []
+            self.history('items', item['id'], history_limit) if item else
+            self.history('annotations', note['id'], history_limit) if note else []
         )
         return {'selection': selection, 'item': item, 'annotation': note,
                 'history': selected_history,
@@ -766,8 +840,13 @@ class ReviewStore(RoundStore):
             selected.append([ref, records, self.read_file(path)['hash']])
         return digest(selected)
 
-    def review_view(self, locked=False):
-        state = self.state()
+    def review_view(self, locked=False, round_id=None, scope=None):
+        state = self.state(scope=scope, round_id=round_id)
+        target_round = None
+        if round_id is not None:
+            target_round = self.round(round_id)
+            if target_round.get('status') != 'completed':
+                raise ValueError('目标审查轮尚未完成')
         scopes = {}
         for item in state['items']:
             try:
@@ -794,7 +873,26 @@ class ReviewStore(RoundStore):
                 note['error'] = ''
             except (OSError, ValueError) as e:
                 note['stale'], note['error'] = True, str(e)
-        state['workflow'] = self.workflow(locked=locked)
+        workflow = self.workflow(locked=locked)
+        # A scoped panel must never inherit a plan from another comparison
+        # scope. Round panels also expose their immutable target metadata.
+        if target_round or (scope and scope.get('source')):
+            item_ids = {i['id'] for i in state['items']}
+            annotation_ids = {n['id'] for n in state['annotations']}
+            plan_items = set(workflow.get('itemIds', []))
+            plan_annotations = set(workflow.get('annotationIds', []))
+            plan_ids = plan_items | plan_annotations
+            if not plan_ids or not plan_items.issubset(item_ids) or not plan_annotations.issubset(annotation_ids):
+                workflow = {'status': 'feedback_ready' if item_ids or annotation_ids else 'no_feedback',
+                            'mayApply': False,
+                            'instruction': '读取意见后先给出具体修改方案，等待用户明确确认。'}
+            state = {'revision': state['revision'], 'items': state['items'],
+                     'annotations': state['annotations'], 'guides': state['guides'],
+                     'workflow': workflow}
+            if target_round:
+                state['targetRound'] = self._round_summary(target_round)
+        else:
+            state['workflow'] = workflow
         state['instructions'] = '审查意见不是改代码授权。先提出修改方案，等用户在聊天中明确确认后再修改。'
         return state
 
@@ -823,12 +921,14 @@ class ReviewStore(RoundStore):
                 return self.workflow(locked=True)
         path = self.data / 'workflow.json'
         if not path.exists():
-            return {'status': 'feedback_ready' if self.state()['items'] or self.state()['annotations'] else 'no_feedback', 'mayApply': False,
+            index = self._review_index()
+            has_feedback = any(s.get('itemCount', 0) or s.get('annotationCount', 0) for s in index['scopes'])
+            return {'status': 'feedback_ready' if has_feedback else 'no_feedback', 'mayApply': False,
                     'instruction': '读取意见后先给出修改方案，等待用户明确确认。'}
         plan = json.loads(path.read_text(encoding='utf-8'))
         if plan['status'] not in ('completed', 'invalidated'):
             reason = ''
-            if plan['reviewRevision'] != self.state()['revision']:
+            if plan['reviewRevision'] != self._review_index()['revision']:
                 reason = '审查意见已更新，需要重新提出并确认方案。'
             elif plan['status'] != 'applying' and any(self.read_file(p)['hash'] != h for p, h in plan['codeHashes'].items()):
                 reason = '方案涉及的代码已变化，需要重新提出并确认方案。'
@@ -892,26 +992,41 @@ class ReviewStore(RoundStore):
             return self.workflow(locked=True)
 
     def save_item(self, payload):
+        if 'scope' not in payload and payload.get('id') is not None:
+            existing = next((item for item in self.state()['items'] if item['id'] == payload['id']), None)
+            if existing is None:
+                raise ValueError('审查项不存在')
+            payload = {**payload, 'scope': existing['scope']}
         return self.save_batch({'revision': payload.get('revision'), 'items': [payload]})
 
     def save_batch(self, payload):
         with self.writing():
-            state = self.state()
+            items = payload.get('items')
+            annotations = payload.get('annotations', [])
+            if not isinstance(items, list) or len(items) > 1000:
+                raise ValueError('审查项数量无效')
+            if not isinstance(annotations, list) or len(annotations) > 200:
+                raise ValueError('批注数量无效')
+            entries = items + annotations
+            if not entries or any(not isinstance(entry.get('scope'), dict) for entry in entries):
+                raise ValueError('每次保存必须属于一个明确的比较范围')
+            scope = entries[0]['scope']
+            if any(scope_identity(entry['scope']) != scope_identity(scope) for entry in entries):
+                raise ValueError('一次保存不能混合多个审查范围')
+            state = self.state(scope=scope)
             if payload.get('revision') != state['revision']:
                 raise ValueError('审查数据已被其他窗口或助手修改，请刷新后重试（本次未覆盖）')
-            if not isinstance(payload.get('items'), list) or len(payload['items']) > 1000 or not (payload['items'] or payload.get('annotations')):
+            if not (items or annotations):
                 raise ValueError('审查项数量无效')
             scopes, history_records = {}, []
-            for entry in payload['items']:
+            for entry in items:
                 self._merge_item(state, entry, scopes, history_records)
-            if not isinstance(payload.get('annotations', []), list) or len(payload.get('annotations', [])) > 200:
-                raise ValueError('批注数量无效')
-            for entry in payload.get('annotations', []):
+            for entry in annotations:
                 self._merge_annotation(state, entry, history_records)
             state['revision'] += 1
             self._append_history(history_records)
-            atomic_json(self.data / 'reviews.json', state)
-            return self.review_view(locked=True)
+            self._save_scope(state, scope)
+            return self.review_view(locked=True, scope=scope)
 
     def _merge_item(self, state, payload, scopes, history_records):
         item = next((i for i in state['items'] if i['id'] == payload.get('id')), None)

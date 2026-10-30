@@ -12,7 +12,7 @@ import unittest
 BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE))
 from review_core import ReviewStore, decode, patch_literals
-from server import App, Projects
+from server import App, Projects, _add_review_refs
 
 
 class ReviewTests(unittest.TestCase):
@@ -31,6 +31,14 @@ class ReviewTests(unittest.TestCase):
         self.git('config', 'user.name', 'Local test')
         self.git('add', '.')
         self.git('commit', '-qm', 'test baseline')
+
+    def test_review_refs_include_exact_round_scope(self):
+        scope = {'source': 'round', 'round': 'a' * 20}
+        value = {'items': [{'id': 3, 'scope': scope}],
+                 'annotations': [{'id': 4, 'scope': scope}]}
+        result = _add_review_refs(self.store, value)
+        self.assertEqual(result['items'][0]['reviewRef'], 'round:' + 'a' * 20 + ':item:3')
+        self.assertEqual(result['annotations'][0]['reviewRef'], 'round:' + 'a' * 20 + ':annotation:4')
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -225,7 +233,9 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in replies],[1,2,3,4])
         self.assertEqual(len(replies[1]['result']['tools']),15)
         self.assertTrue(all('projectRoot' in t['inputSchema']['required'] for t in replies[1]['result']['tools']))
-        self.assertEqual(json.loads(replies[2]['result']['content'][0]['text'])['items'],[])
+        results_tool = next(t for t in replies[1]['result']['tools'] if t['name'] == 'review_results')
+        self.assertIn('roundId', results_tool['inputSchema']['required'])
+        self.assertIn('error',replies[2])
         self.assertIn('error',replies[3])
         self.assertTrue((self.root/'.code-review/.gitignore').exists())
 

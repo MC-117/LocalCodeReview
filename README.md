@@ -20,7 +20,7 @@ The MCP Apps component in dark mode, captured with an isolated sample project in
 
 ### Usage
 
-Clone the source into a directory of your choice. Codex maintains its installed plugin cache separately; review data stays in each project's `.code-review/` directory.
+Clone the source into a directory of your choice. Codex maintains its installed plugin cache separately; review data stays in each project's `.code-review/` directory. `reviews.json` is only a small scope index; each comparison scope's items, annotations, and guide are stored in its own `reviews/<scope-key>.json` shard.
 
 For the standalone page, run `python server.py --root "C:\path\to\project"` or `start.cmd "C:\path\to\project"` from the tool directory. The terminal prints a local URL. Append `?compact=1` for a compact checklist. Press Ctrl+C to stop the server.
 
@@ -133,7 +133,9 @@ Before editing, the assistant calls `review_round(action="begin", projectRoot, t
 
 `review_open(projectRoot, threadId, query={source: "round", round: "latest"})` selects the most recent completed modifying round in the exact conversation and freezes its ID for the panel. An explicit round ID is also supported. Without an explicit source, existing rounds in that conversation are preferred. The page shows the request summary and endpoint capture times; stable IDs are available in tooltips. Scope settings can select other completed rounds. The third code-layout option displays the captured end state in this mode; the native-file action always opens the current worktree file.
 
-`review_sources(projectRoot, threadId)` lists turn IDs, user-request summaries, patch counts, and captured rounds. `source: "session", turnId: "..."` filters historical patches by stable ID; `start/end` remain supported. These filters limit patch sources without creating missing historical endpoints. Older logs or a single baseline remain limited historical patches or snapshot-to-current comparisons. Unfinished rounds are not presented as complete round comparisons.
+`review_sources(projectRoot, threadId)` defaults to a compact index with source counts and the five latest round summaries. Request `level: "sessions"`, `"snapshots"`, or `"rounds"` to page through one directory at a time (`offset`, `limit`, max 50). Then use `level: "turns"` with a `sessionId` to page through that log segment, or `level: "turn"` with `sessionId` and `turnId` to read one turn summary. `source: "session", turnId: "..."` still filters historical patches by stable ID; `start/end` remain supported. These filters limit patch sources without creating missing historical endpoints. Older logs or a single baseline remain limited historical patches or snapshot-to-current comparisons. Unfinished rounds are not presented as complete round comparisons.
+
+Assistant-facing reads follow an index-first rule. Start with the compact `review_sources(level: "index")`, then select one exact `roundId` or one `sessionId + turnId` (the `reviews` directory also exposes scope keys for older snapshot reviews). `review_changes` rejects broad session/workspace reads and returns the complete patch payload for that exact target; use `include` only to narrow it to a file. `review_results(roundId)` returns the complete review data for that one round and adds a stable `reviewRef` to every item and annotation. `review_context` requires an `itemId` plus the matching `roundId` or `scopeKey`. Short index summaries are for locating a target, not a replacement for its selected content. The UI-only `review_ui_request` routes can still load complete code for the selected file because that data is rendered in the review panel rather than added to the assistant context.
 
 Capture is invoked by the assistant. There is no always-on hook intercepting all Codex edits. The bundled skill requires capture before and after authorized edits without asking you to filter each round manually. Feedback still requires a plan and chat confirmation before code changes. Round summaries live in `.code-review/rounds/index.json`; details are in `.code-review/rounds/<round-id>.json`. Endpoints use `snapshots/` and `blobs/`. Third-party libraries and test artifacts are excluded by default.
 
@@ -159,7 +161,7 @@ Local Review · 通用本地审查
 
 ### 使用
 
-源码放在你自己的 Git 仓库或克隆目录中。Codex 的已安装缓存与本目录分开管理，项目审查数据仍保存在各项目的 `.code-review/`。
+源码放在你自己的 Git 仓库或克隆目录中。Codex 的已安装缓存与本目录分开管理，项目审查数据仍保存在各项目的 `.code-review/`。`reviews.json` 仅为小型范围索引；每个比较范围的审查项、意见和导览分别存入 `reviews/<scope-key>.json`。
 
 在工具目录运行 `python server.py --root "C:\path\to\project"` 或 `start.cmd "C:\path\to\project"`。终端打印本机地址；加 `?compact=1` 显示精简清单。Ctrl+C 停止。
 
@@ -272,7 +274,9 @@ node tests/viewer_navigation_test.cjs "PATH_TO_LOCAL_PLAYWRIGHT"
 
 `review_open(projectRoot, threadId, query={source: "round", round: "latest"})` 选择该聊天最近已完成且有修改的轮次，并将具体 ID 固定到本面板。也可指定 `round` ID；未明确指定来源时优先选择该对话已有的最近修改轮。页面展示请求摘要和轮前/轮后采集时间，悬停可查看稳定 ID；范围选项中可切换已完成轮次。第三个代码布局按钮在此模式下叫“本轮修改后”，它展示结束快照；“原生文件”始终打开工作区当前文件。
 
-`review_sources(projectRoot, threadId)` 返回轮次 ID、用户请求摘要、补丁数量以及已采集单轮。`source: "session", turnId: "..."` 按稳定 ID 筛选历史补丁，`start/end` 继续兼容。它们只限制补丁来源，不能补造历史完整端点。只有旧日志或单个基线的历史修改仍显示为有限覆盖的历史补丁/“快照 → 当前”。未完成轮次不显示为完整单轮对比。
+`review_sources(projectRoot, threadId)` 默认只返回来源计数和最近 5 轮摘要的短索引。用 `level: "sessions"`、`"snapshots"` 或 `"rounds"` 分页读取单类目录（`offset`、`limit`，最多 50 条）；再用 `level: "turns"` 和 `sessionId` 分页浏览该日志段，或用 `level: "turn"`、`sessionId`、`turnId` 读取单轮摘要。`source: "session", turnId: "..."` 仍可按稳定 ID 筛选历史补丁，`start/end` 继续兼容。它们只限制补丁来源，不能补造历史完整端点。只有旧日志或单个基线的历史修改仍显示为有限覆盖的历史补丁/“快照 → 当前”。未完成轮次不显示为完整单轮对比。
+
+助手接口遵循“先索引、后完整内容”：先调用紧凑的 `review_sources(level: "index")`，再精确选择一个 `roundId` 或一个 `sessionId + turnId`；旧快照审查还可从 `reviews` 目录取得 `scopeKey`。`review_changes` 会拒绝宽泛的会话/工作区读取，对精确目标返回完整补丁，可用 `include` 缩小到单个文件。`review_results(roundId)` 返回该轮完整审查数据，并给每条审查项和意见附上稳定的 `reviewRef`。`review_context` 必须同时带 `itemId` 和对应的 `roundId` 或 `scopeKey`，不能只凭裸编号读取。索引摘要只用于定位目标，不能代替目标内容。`review_ui_request` 的界面内部接口仍可读取选中文件的完整代码，因为这部分用于审查面板显示，不会作为助手上下文的常规返回。
 
 采集由助手主动调用工具完成，插件没有常驻的 Codex 全部编辑拦截器。随附 skill 要求后续助手在获准修改前后记录，不要求你逐次手动筛选。收到审查意见后仍先提方案、等聊天确认再改代码。单轮摘要保存在 `.code-review/rounds/index.json`，每轮详情独立保存在 `.code-review/rounds/<round-id>.json`；端点存放在既有 `snapshots/` 和 `blobs/`。第三方库和测试产物目录默认不进入快照。
 

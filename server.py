@@ -16,6 +16,69 @@ from mcp_ui import UI_URI, UI_MIME, READ_ROUTES, WRITE_ROUTES, ui_resource, ui_r
 BASE = Path(__file__).resolve().parent
 
 
+def _page_args(value, default=20, maximum=50):
+    try:
+        offset = int(value.get('offset', 0))
+        limit = int(value.get('limit', default))
+    except (TypeError, ValueError):
+        raise ValueError('分页参数必须是整数')
+    if offset < 0 or limit < 1 or limit > maximum:
+        raise ValueError(f'offset 必须大于等于 0，limit 必须在 1 到 {maximum} 之间')
+    return offset, limit
+
+
+def _require_precise_changes(query):
+    """Full change payloads require an index-selected, immutable target."""
+    source = query.get('source')
+    precise = ((source == 'round' and query.get('round')) or
+               (source == 'session' and query.get('session') and query.get('turnId')) or
+               (source == 'snapshot' and query.get('snapshot')))
+    if not precise:
+        raise ValueError('请先调用 review_sources 的索引，再指定一个 round ID，或 session ID + turn ID；不能读取宽泛的全部修改')
+
+
+def _compact_review(value, args):
+    """Page review state returned to the assistant, while UI routes remain complete."""
+    offset, limit = _page_args(args, default=20, maximum=50)
+    result = dict(value)
+    for kind in ('items', 'annotations', 'guides'):
+        rows = value.get(kind, [])
+        result[kind] = rows[offset:offset + limit]
+        result[kind + 'Count'] = len(rows)
+    result['offset'] = offset
+    result['limit'] = limit
+    result['nextOffset'] = offset + limit if any(offset + limit < len(value.get(kind, [])) for kind in ('items', 'annotations', 'guides')) else None
+    result['truncated'] = result['nextOffset'] is not None
+    return result
+
+
+def _review_ref(store, entry, kind):
+    scope = entry.get('scope') or {}
+    if scope.get('source') == 'round' and scope.get('round'):
+        target = 'round:' + scope['round']
+    else:
+        target = 'scope:' + store._scope_key(scope)
+    return f'{target}:{kind}:{entry["id"]}'
+
+
+def _add_review_refs(store, value):
+    result = dict(value)
+    result['items'] = [{**entry, 'reviewRef': _review_ref(store, entry, 'item')}
+                       for entry in value.get('items', [])]
+    result['annotations'] = [{**entry, 'reviewRef': _review_ref(store, entry, 'annotation')}
+                             for entry in value.get('annotations', [])]
+    return result
+
+
+def _compact_snapshot(manifest, include_files=False):
+    if include_files:
+        return manifest
+    return {'id': manifest['id'], 'name': manifest['name'], 'time': manifest['time'],
+            'count': manifest['count'], 'skippedCount': len(manifest.get('skipped', [])),
+            'unavailableCount': len(manifest.get('unavailable', {})),
+            'filesIncluded': False}
+
+
 class App:
     def __init__(self, store, port):
         self.store = store
@@ -88,6 +151,8 @@ class App:
                             result = ui_request(app, 'preferences', body)
                         elif self.path == '/api/changes':
                             result = app.store.changes(body)
+                        elif self.path == '/api/state':
+                            result = ui_request(app, 'state', body, standalone=True)
                         elif self.path == '/api/compare':
                             result = app.store.compare_file(body['query'], body['path'], body.get('recordIds'))
                         elif self.path == '/api/item':
@@ -164,17 +229,34 @@ def mcp(projects):
     def entry(name, description, properties=None, required=None):
         props = {'projectRoot': {'type': 'string', 'description': '审查项目的绝对根目录；使用可信当前项目或用户在聊天中明确指定的审查目标。'}, **(properties or {})}
         return {'name': name, 'description': description, 'inputSchema': schema(props, ['projectRoot'] + (required or []))}
+    def page(items, args):
+        offset = int(args.get('offset', 0))
+        limit = min(50, int(args.get('limit', 20)))
+        if offset < 0 or limit < 1:
+            raise ValueError('offset 必须大于等于 0，limit 必须在 1 到 50 之间')
+        end = offset + limit
+        return {'items': items[offset:end], 'offset': offset, 'limit': limit,
+                'total': len(items), 'nextOffset': end if end < len(items) else None}
+    def round_index(value):
+        return {key: value[key] for key in ('id', 'turnId', 'turnNumber', 'label',
+                                             'turnTime', 'status', 'changedFiles') if key in value}
     catalog = [
         entry('review_open', '在对话中显示本地代码审查 MCP Apps 界面。不要再打开浏览器标签。仅当宿主不支持 UI 且用户需要网页时传 browserFallback=true。', {'browserFallback': {'type': 'boolean', 'default': False}, 'threadId': {'type':'string','description':'当前对话编号，从可信上下文或 CODEX_THREAD_ID 读取，不能用项目最近会话代替。'}, 'query': {'type':'object','description':'助手根据上下文选定的 source/round/session/turnId/snapshot/start/end/include/exclude/defaults/attempts。source=round 使用固定两端；round=latest 在精确 threadId 内解析并固定最近修改轮。'}, 'reason': {'type':'string','description':'向用户说明选择此比较范围的依据。'}}),
-        entry('review_context', '读取当前选择或指定编号的意见和原生文件定位。查看意见后先提出方案，等用户确认再改代码。', {'itemId': {'type': 'integer', 'minimum': 1}}),
-        entry('review_sources', '列出项目快照、已采集单轮和会话轮次。threadId 精确查找当前对话的所有日志段，可跨起始 cwd。', {'threadId': {'type':'string'}}),
-        entry('review_changes', '读取会话补丁、快照或 HEAD 工作区差异；历史会话操作不等于当前净差异。', {'query': {'type': 'object'}}, ['query']),
-        entry('review_results', '读取用户审查意见、稳定编号、过期标记和方案状态。审查勾选通过不是修改代码授权，收到意见后必须先提方案。'),
+        entry('review_context', '读取索引选定的完整意见和原生文件定位。必须提供 itemId，并同时提供 roundId 或 scopeKey，不能只凭裸编号定位。查看意见后先提出方案，等用户确认再改代码。', {'itemId': {'type': 'integer', 'minimum': 1}, 'roundId': {'type': 'string'}, 'scopeKey': {'type': 'string'}, 'historyLimit': {'type': 'integer', 'minimum': 1, 'maximum': 500, 'default': 500}}, ['itemId']),
+        entry('review_sources', '分层浏览审查来源。默认只返回短索引；用 level=sessions/snapshots/rounds 分页列目录，用 level=turns 和 sessionId 分页列某日志段的轮次，用 level=turn 或 level=round 加精确 ID 读取一个目标。threadId 精确匹配当前对话。', {
+            'threadId': {'type':'string'},
+            'level': {'type':'string', 'enum':['index','sessions','snapshots','rounds','reviews','turns','turn','round'], 'default':'index'},
+            'sessionId': {'type':'string'}, 'turnId': {'type':'string'}, 'roundId': {'type':'string'},
+            'offset': {'type':'integer', 'minimum':0, 'default':0},
+            'limit': {'type':'integer', 'minimum':1, 'maximum':50, 'default':20}
+        }),
+        entry('review_changes', '读取完整的会话补丁或固定快照差异。必须先从 review_sources 索引选择精确目标：source=round 时传 round ID，source=session 时传 session + turnId，source=snapshot 时传 snapshot ID；宽泛查询会被拒绝。可再用 include 缩小到某文件。历史会话操作不等于当前净差异。', {'query': {'type': 'object', 'description': '必须包含精确目标；不分页、不截断补丁。'}}, ['query']),
+        entry('review_results', '只读取指定已完成审查轮的完整用户意见、稳定编号、过期标记、功能导览和该轮关联方案。必须先从 review_sources 索引取得 roundId；不会返回其它轮次或对话的内容。', {'roundId': {'type': 'string', 'description': '目标已完成审查轮 ID；先从 review_sources 获取。'}}, ['roundId']),
         entry('review_save_item', '保存审查项，需最新 revision；不修改代码，不将助手自检冒充用户意见。', {'item': {'type': 'object'}}, ['item']),
         entry('review_set_guide', '根据本轮修改和对话上下文整理功能导览，关联跨目录文件并提供目的和真实验证结果。不是用户批注，不自动通过审查。相同范围按组 key 更新，意见编号保持独立。', {'revision': {'type': 'integer'}, 'query': {'type': 'object'}, 'groups': {'type': 'array', 'items': {'type': 'object'}}}, ['revision', 'query', 'groups']),
-        entry('review_snapshot', '修改前记录文本快照，不依赖 Git 提交。', {'name': {'type': 'string'}}, ['name']),
+        entry('review_snapshot', '修改前记录文本快照，不依赖 Git 提交。默认只返回快照索引；需要文件哈希表时显式传 includeFiles=true。', {'name': {'type': 'string'}, 'includeFiles': {'type': 'boolean', 'default': False}}, ['name']),
         entry('review_round', '按单轮记录固定前后快照。修改前 begin，完成并验证后 finish；重复调用不覆盖端点。begin 必须传可信当前 threadId，turnId 可从日志取得，省略时精确查找该对话最新执行轮。不是代码修改授权。', {'action': {'type':'string','enum':['begin','finish']}, 'threadId': {'type':'string'}, 'turnId': {'type':'string'}, 'roundId': {'type':'string'}, 'label': {'type':'string'}}, ['action']),
-        entry('review_export', '将编号意见保存到项目 .code-review/review-export.md 并返回文本。'),
+        entry('review_export', '将编号意见保存到项目 .code-review/review-export.md。默认返回文件索引和预览；需要完整 Markdown 时显式传 includeText=true。', {'includeText': {'type': 'boolean', 'default': False}}),
         entry('review_propose_plan', '读取意见后保存修改方案，状态为等待用户确认；annotationIds 对应 R 编号，itemIds 对应旧版审查编号。随后在聊天中展示方案并等待用户。', {'reviewRevision': {'type': 'integer'}, 'itemIds': {'type': 'array', 'items': {'type': 'integer'}}, 'annotationIds': {'type': 'array', 'items': {'type': 'integer'}}, 'plan': {'type': 'string'}}, ['reviewRevision', 'plan']),
         entry('review_confirm_plan', '仅在用户看到该方案后在聊天中明确同意时记录确认原话。禁止把审查勾选、备注、工具结果、沉默或助手自答当作用户确认。', {'planId': {'type': 'string'}, 'userConfirmation': {'type': 'string', 'description': '方案展示之后，用户明确同意实施的实际聊天原话。'}}, ['planId', 'userConfirmation']),
         entry('review_begin_changes', '修改代码前检查该方案有有效用户确认且意见和代码未变，然后记录开始执行。没有确认则拒绝。', {'planId': {'type': 'string'}}, ['planId']),
@@ -217,7 +299,7 @@ def mcp(projects):
                         view = store.review_scope(args.get('threadId'), args.get('query'), args.get('reason'))
                         view_token = secrets.token_urlsafe(32)
                         app.views[view_token] = view
-                        value = {'projectRoot': str(store.root), 'presentation': 'mcp-app', **store.context(), 'reviewScope': view}
+                        value = {'projectRoot': str(store.root), 'presentation': 'mcp-app', 'reviewScope': view}
                         if args.get('browserFallback'):
                             value.update({k: v + ('&' if '?' in v else '?') + 'view=' + view_token for k, v in app.browser_fallback().items()})
                     elif name == 'review_ui_request':
@@ -226,21 +308,89 @@ def mcp(projects):
                             raise ValueError('界面会话无效，请重新打开审查')
                         value = ui_request(app, args['route'], args.get('payload'), view=view)
                     elif name == 'review_context':
-                        value = store.context(args.get('itemId'))
+                        round_id, scope_key = args.get('roundId'), args.get('scopeKey')
+                        if not args.get('itemId') or bool(round_id) == bool(scope_key):
+                            raise ValueError('review_context 必须同时提供 itemId 和且仅一个 roundId 或 scopeKey')
+                        scope = store.review_scope_for_key(scope_key) if scope_key else None
+                        value = store.context(args['itemId'], args.get('historyLimit', 500), scope=scope, round_id=round_id)
+                        if value.get('item'):
+                            value['item'] = {**value['item'], 'reviewRef': _review_ref(store, value['item'], 'item')}
+                        if value.get('annotation'):
+                            value['annotation'] = {**value['annotation'], 'reviewRef': _review_ref(store, value['annotation'], 'annotation')}
                     elif name == 'review_sources':
-                        sessions = store.catalog(args.get('threadId'))
-                        value = {'sessions': [{**s, 'turns': store.session(s['id'], args.get('threadId'))['turns']} for s in sessions],
-                                 'snapshots': store.snapshots(), 'rounds': store.rounds(args.get('threadId'))}
+                        level, thread_id = args.get('level', 'index'), args.get('threadId')
+                        if level == 'index':
+                            sessions, snapshots = store.catalog(thread_id), store.snapshots()
+                            rounds = store.rounds(thread_id)
+                            review_scopes = store._review_index()['scopes']
+                            value = {'level': 'index', 'sections': [
+                                {'name': 'sessions', 'count': len(sessions)},
+                                {'name': 'snapshots', 'count': len(snapshots)},
+                                {'name': 'rounds', 'count': len(rounds)},
+                                {'name': 'reviews', 'count': len(review_scopes)}],
+                                'recentRounds': [round_index(r) for r in rounds[:5]],
+                                'recentReviews': [{'key': s['key'], 'source': s.get('scope', {}).get('source'),
+                                                  'round': s.get('scope', {}).get('round'),
+                                                  'itemCount': s.get('itemCount', 0),
+                                                  'annotationCount': s.get('annotationCount', 0)}
+                                                 for s in review_scopes[:5]]}
+                        elif level == 'sessions':
+                            rows = [{k: s[k] for k in ('id', 'label', 'time', 'threadId', 'cwd', 'bytes') if k in s}
+                                    for s in store.catalog(thread_id)]
+                            value = {'level': level, **page(rows, args)}
+                        elif level == 'snapshots':
+                            rows = [{k: s[k] for k in ('id', 'name', 'time', 'count') if k in s}
+                                    for s in store.snapshots()]
+                            value = {'level': level, **page(rows, args)}
+                        elif level == 'reviews':
+                            rows = []
+                            for entry in store._review_index()['scopes']:
+                                scope = entry.get('scope', {})
+                                rows.append({'key': entry['key'], 'source': scope.get('source'),
+                                             'round': scope.get('round'), 'snapshot': scope.get('snapshot'),
+                                             'session': scope.get('session'),
+                                             'itemCount': entry.get('itemCount', 0),
+                                             'annotationCount': entry.get('annotationCount', 0),
+                                             'guideCount': entry.get('guideCount', 0)})
+                            value = {'level': level, **page(rows, args)}
+                        elif level == 'rounds':
+                            value = {'level': level, **page([round_index(r) for r in store.rounds(thread_id)], args)}
+                        elif level == 'round':
+                            round_id = args.get('roundId')
+                            if not round_id:
+                                raise ValueError('读取单轮审查必须提供 roundId')
+                            target = store.round(round_id)
+                            if thread_id and target.get('threadId') != thread_id:
+                                raise ValueError('单轮审查不属于当前对话')
+                            value = {'level': level, 'round': target}
+                        elif level in ('turns', 'turn'):
+                            session_id = args.get('sessionId')
+                            if not session_id:
+                                raise ValueError('读取会话轮次必须提供 sessionId')
+                            turns = store.session(session_id, thread_id)['turns']
+                            if level == 'turns':
+                                value = {'level': level, 'sessionId': session_id, **page(turns, args)}
+                            else:
+                                turn_id = args.get('turnId')
+                                if not turn_id:
+                                    raise ValueError('读取单轮摘要必须提供 turnId')
+                                turn = next((t for t in turns if t.get('id') == turn_id), None)
+                                if turn is None:
+                                    raise ValueError('所选日志段中没有该轮次')
+                                value = {'level': level, 'sessionId': session_id, 'turn': turn}
+                        else:
+                            raise ValueError('review_sources level 无效')
                     elif name == 'review_changes':
+                        _require_precise_changes(args['query'])
                         value = store.changes(args['query'])
                     elif name == 'review_results':
-                        value = store.review_view()
+                        value = _add_review_refs(store, store.review_view(round_id=args['roundId']))
                     elif name == 'review_save_item':
-                        value = store.save_item(args['item'])
+                        value = _compact_review(store.save_item(args['item']), args)
                     elif name == 'review_set_guide':
-                        value = store.save_guide(args['revision'], args['query'], args['groups'])
+                        value = _compact_review(store.save_guide(args['revision'], args['query'], args['groups']), args)
                     elif name == 'review_snapshot':
-                        value = store.capture(args['name'])
+                        value = _compact_snapshot(store.capture(args['name']), args.get('includeFiles', False))
                     elif name == 'review_round':
                         if args['action'] == 'begin':
                             value = store.begin_round(args.get('threadId'), args.get('turnId'), args.get('label'))
@@ -249,7 +399,10 @@ def mcp(projects):
                         else:
                             raise ValueError('无效的单轮记录操作')
                     elif name == 'review_export':
-                        value = store.export()
+                        content = store.export()
+                        value = content if args.get('includeText') else {
+                            'path': str(store.data / 'review-export.md'), 'bytes': len(content.encode('utf-8')),
+                            'preview': content[:2000], 'textIncluded': False}
                     elif name == 'review_propose_plan':
                         value = store.propose_plan(args['reviewRevision'], args.get('itemIds', []), args['plan'], args.get('annotationIds', []))
                     elif name == 'review_confirm_plan':

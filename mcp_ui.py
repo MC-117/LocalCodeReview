@@ -63,7 +63,13 @@ def ui_request(app, route, body=None, view=None, standalone=False):
                 language = 'auto'
             return {'language': language if language in ('auto', 'zh-CN', 'en') else 'auto'}
         if route == 'state':
-            return store.review_view()
+            query = body.get('query') or (view or {}).get('query') or {}
+            # A fixed round has its own review shard and workflow. Passing it only
+            # as a scope would fall back to the global workflow.json and show a
+            # plan from another round.
+            if query.get('source') == 'round' and query.get('round'):
+                return store.review_view(round_id=query['round'])
+            return store.review_view(scope=query)
         if route == 'session':
             value = store.session(body['id'], (view or {}).get('threadId'))
             return {'turns': value['turns'], 'warnings': value['warnings'], 'count': len(value['records'])}

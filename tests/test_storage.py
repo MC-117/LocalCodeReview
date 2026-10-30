@@ -30,8 +30,10 @@ class StorageTests(unittest.TestCase):
             'status': 'changes', 'refs': [], 'scope': {}, 'notes': '需要调整'
         })
         raw = json.loads((self.store.data / 'reviews.json').read_text(encoding='utf-8'))
-        self.assertNotIn('history', raw)
-        self.assertNotIn('history', raw['items'][0])
+        self.assertEqual(raw['storageSchema'], 1)
+        self.assertNotIn('items', raw)
+        shard = json.loads((self.store.data / raw['scopes'][0]['file']).read_text(encoding='utf-8'))
+        self.assertNotIn('history', shard['items'][0])
         history_path = self.store.data / 'history' / 'items' / '1.jsonl'
         self.assertTrue(history_path.exists())
         self.assertGreaterEqual(len(history_path.read_text(encoding='utf-8').splitlines()), 2)
@@ -50,7 +52,9 @@ class StorageTests(unittest.TestCase):
             'refs': [], 'scope': {}
         }]})
         raw = json.loads((self.store.data / 'reviews.json').read_text(encoding='utf-8'))
-        self.assertNotIn('history', raw['annotations'][0])
+        self.assertNotIn('annotations', raw)
+        shard = json.loads((self.store.data / raw['scopes'][0]['file']).read_text(encoding='utf-8'))
+        self.assertNotIn('history', shard['annotations'][0])
         self.assertTrue((self.store.data / 'history' / 'annotations' / '1.jsonl').exists())
         self.assertNotIn('history', self.store.review_view()['annotations'][0])
         self.store.select({'annotationId': 1})
@@ -68,10 +72,13 @@ class StorageTests(unittest.TestCase):
         }
         (data / 'reviews.json').write_text(json.dumps(legacy, ensure_ascii=False), encoding='utf-8')
         migrated = ReviewStore(self.root)
+        migrated.state()
         current = json.loads((data / 'reviews.json').read_text(encoding='utf-8'))
-        self.assertEqual(current['historySchema'], 1)
-        self.assertNotIn('history', current['items'][0])
-        self.assertNotIn('history', current['annotations'][0])
+        self.assertEqual(current['storageSchema'], 1)
+        self.assertNotIn('items', current)
+        shard = json.loads((data / current['scopes'][0]['file']).read_text(encoding='utf-8'))
+        self.assertNotIn('history', shard['items'][0])
+        self.assertNotIn('history', shard['annotations'][0])
         self.assertEqual(len(migrated.history('items', 1)), 1)
         self.assertEqual(len(migrated.history('annotations', 1)), 1)
 
