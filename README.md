@@ -44,8 +44,8 @@ Choose **Auto**, **English**, or **简体中文** in the review header. Auto fol
 
 ### Feedback workflow
 
-1. Write comments; the page saves automatically. Submit feedback waits for the latest save, then asks the assistant to read the feedback. You can also ask in chat to read review feedback or say, for example, “R3: keep the original interface.” Export is in the top overflow menu and supports copying or downloading Markdown.
-2. The assistant reads the feedback and relevant code, proposes concrete changes, and records the plan in `plan.md`.
+1. Write comments; the page saves automatically. Submit feedback waits for the latest save, then sends only active comments, their locations, and pending or stale review items to chat. Approved items without comments are omitted. You can also ask in chat to read review feedback or say, for example, “R3: keep the original interface.” Export is in the top overflow menu and supports copying or downloading Markdown.
+2. The assistant uses the submitted feedback and relevant code to propose concrete changes, and records the plan in `plan.md`.
 3. **The assistant edits code only after you explicitly confirm the plan in chat. Checkmarks and comments do not authorize edits.**
 4. Changes to code or feedback invalidate earlier plan confirmation. Modified code requires a new review; old approvals become stale.
 
@@ -135,7 +135,7 @@ Before editing, the assistant calls `review_round(action="begin", projectRoot, t
 
 `review_sources(projectRoot, threadId)` defaults to a compact index with source counts and the five latest round summaries. Request `level: "sessions"`, `"snapshots"`, or `"rounds"` to page through one directory at a time (`offset`, `limit`, max 50). Then use `level: "turns"` with a `sessionId` to page through that log segment, or `level: "turn"` with `sessionId` and `turnId` to read one turn summary. `source: "session", turnId: "..."` still filters historical patches by stable ID; `start/end` remain supported. These filters limit patch sources without creating missing historical endpoints. Older logs or a single baseline remain limited historical patches or snapshot-to-current comparisons. Unfinished rounds are not presented as complete round comparisons.
 
-Assistant-facing reads follow an index-first rule. Start with the compact `review_sources(level: "index")`, then select one exact `roundId` or one `sessionId + turnId` (the `reviews` directory also exposes scope keys for older snapshot reviews). `review_changes` rejects broad session/workspace reads and returns the complete patch payload for that exact target; use `include` only to narrow it to a file. `review_results(roundId)` returns the complete review data for that one round and adds a stable `reviewRef` to every item and annotation. `review_context` requires an `itemId` plus the matching `roundId` or `scopeKey`. Short index summaries are for locating a target, not a replacement for its selected content. The UI-only `review_ui_request` routes can still load complete code for the selected file because that data is rendered in the review panel rather than added to the assistant context.
+Assistant-facing reads follow an index-first rule when the target is unknown. Reuse the exact round ID returned by `review_round(finish)` when available. Use `review_changes` with `summaryOnly: true` to get changed paths and actions without patches when preparing a guide; request full patches only for code inspection. `review_guides(roundId)` returns only the review revision and saved functional guide, while `review_feedback(roundId)` returns active opinions and pending/stale items without approvals, guides, plans, or code. `review_results(roundId)` defaults to feedback-only; request `detail: "guides"`, `"workflow"`, or `"all"` only when needed. `review_context` defaults to the selected opinion and native file path; request `includeHistory: true` only when prior decisions matter. MCP tool text responses are short status messages; structured data is in `structuredContent`, so the same JSON is not duplicated in the text content. UI-only `review_ui_request` routes can load complete code for the panel without adding that data to the assistant context.
 
 Capture is invoked by the assistant. There is no always-on hook intercepting all Codex edits. The bundled skill requires capture before and after authorized edits without asking you to filter each round manually. Feedback still requires a plan and chat confirmation before code changes. Round summaries live in `.code-review/rounds/index.json`; details are in `.code-review/rounds/<round-id>.json`. Endpoints use `snapshots/` and `blobs/`. Third-party libraries and test artifacts are excluded by default.
 
@@ -181,8 +181,8 @@ Local Review · 通用本地审查
 
 ### 收到意见后的流程
 
-1. 你填写意见，页面自动保存；点主按钮“提交意见给助手”后，会先等待最新意见保存成功，再请求助手读取。也可在聊天中说“读取审查意见”或“意见 R3 保留原接口”。导出在顶部“⋯”菜单内，可复制或下载 Markdown。
-2. 助手读取意见及相关代码，提出具体修改方案，记录到 `plan.md`。
+1. 你填写意见，页面自动保存；点主按钮“提交意见给助手”后，会先等待最新意见保存，再只把有效批注、定位及未通过/过期项发到聊天。无意见的已通过项不会发送。也可在聊天中说“读取审查意见”或“意见 R3 保留原接口”。导出在顶部“⋯”菜单内，可复制或下载 Markdown。
+2. 助手根据提交的意见和相关代码提出具体修改方案，记录到 `plan.md`。
 3. **你在聊天中明确确认该方案后，助手才继续改代码。勾选通过、填写意见都不代表授权修改。**
 4. 代码或意见变化后旧方案确认失效。修改后旧通过结论过期，需要再次审查。
 
@@ -276,7 +276,7 @@ node tests/viewer_navigation_test.cjs "PATH_TO_LOCAL_PLAYWRIGHT"
 
 `review_sources(projectRoot, threadId)` 默认只返回来源计数和最近 5 轮摘要的短索引。用 `level: "sessions"`、`"snapshots"` 或 `"rounds"` 分页读取单类目录（`offset`、`limit`，最多 50 条）；再用 `level: "turns"` 和 `sessionId` 分页浏览该日志段，或用 `level: "turn"`、`sessionId`、`turnId` 读取单轮摘要。`source: "session", turnId: "..."` 仍可按稳定 ID 筛选历史补丁，`start/end` 继续兼容。它们只限制补丁来源，不能补造历史完整端点。只有旧日志或单个基线的历史修改仍显示为有限覆盖的历史补丁/“快照 → 当前”。未完成轮次不显示为完整单轮对比。
 
-助手接口遵循“先索引、后完整内容”：先调用紧凑的 `review_sources(level: "index")`，再精确选择一个 `roundId` 或一个 `sessionId + turnId`；旧快照审查还可从 `reviews` 目录取得 `scopeKey`。`review_changes` 会拒绝宽泛的会话/工作区读取，对精确目标返回完整补丁，可用 `include` 缩小到单个文件。`review_results(roundId)` 返回该轮完整审查数据，并给每条审查项和意见附上稳定的 `reviewRef`。`review_context` 必须同时带 `itemId` 和对应的 `roundId` 或 `scopeKey`，不能只凭裸编号读取。索引摘要只用于定位目标，不能代替目标内容。`review_ui_request` 的界面内部接口仍可读取选中文件的完整代码，因为这部分用于审查面板显示，不会作为助手上下文的常规返回。
+目标不明确时，助手接口先用紧凑的 `review_sources(level: "index")` 定位；若刚完成修改且已有 `review_round(finish)` 返回的 `roundId`，直接沿用。打开页面前可用 `review_changes(summaryOnly: true)` 取得文件摘要，用 `review_guides(roundId)` 读取 revision 与导览；需要检查代码时再读取完整补丁。`review_feedback(roundId)` 只返回有效批注和未通过/过期项；`review_results(roundId)` 默认也只返回反馈，只有传 `detail: "all"` 才返回完整状态。`review_context` 默认不读历史，只有传 `includeHistory: true` 才读取历史记录。工具文本响应只返回短状态，结构化数据位于 `structuredContent`，不会重复注入一份 JSON。`review_ui_request` 仍可向面板读取完整代码，该数据由网页展示，不作为助手上下文的常规返回。
 
 采集由助手主动调用工具完成，插件没有常驻的 Codex 全部编辑拦截器。随附 skill 要求后续助手在获准修改前后记录，不要求你逐次手动筛选。收到审查意见后仍先提方案、等聊天确认再改代码。单轮摘要保存在 `.code-review/rounds/index.json`，每轮详情独立保存在 `.code-review/rounds/<round-id>.json`；端点存放在既有 `snapshots/` 和 `blobs/`。第三方库和测试产物目录默认不进入快照。
 

@@ -804,7 +804,7 @@ class ReviewStore(RoundStore):
             atomic_json(self.data / 'selection.json', value)
         return value
 
-    def context(self, item_id=None, history_limit=20, scope=None, round_id=None):
+    def context(self, item_id=None, history_limit=10, include_history=False, scope=None, round_id=None):
         path = self.data / 'selection.json'
         selection = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
         state = self.review_view(round_id=round_id, scope=scope or selection.get('scope') or {})
@@ -813,18 +813,19 @@ class ReviewStore(RoundStore):
         if not file and item and item.get('refs'):
             file = item['refs'][0]['path']
         note = next((n for n in state['annotations'] if n['id'] == selection.get('annotationId')), None)
-        try:
-            history_limit = max(1, min(50, int(history_limit or 20)))
-        except (TypeError, ValueError):
-            raise ValueError('historyLimit 必须在 1 到 50 之间')
-        selected_history = (
-            self.history('items', item['id'], history_limit) if item else
-            self.history('annotations', note['id'], history_limit) if note else []
-        )
-        return {'selection': selection, 'item': item, 'annotation': note,
-                'history': selected_history,
-                'nativeFile': str(self.root / self.relative(file)) if file else None,
-                'instruction': '若需查看代码，使用 Codex open_in_codex，target={type:file,path:nativeFile}，placement=right。审查清单由 review_open 的 MCP Apps 界面展示；仅在明确需要网页回退时打开浏览器。只读查看，不将自检冒充用户意见。'}
+        selected_history = []
+        if include_history:
+            try:
+                history_limit = max(1, min(50, int(history_limit or 10)))
+            except (TypeError, ValueError):
+                raise ValueError('historyLimit 必须在 1 到 50 之间')
+            selected_history = (
+                self.history('items', item['id'], history_limit) if item else
+                self.history('annotations', note['id'], history_limit) if note else []
+            )
+        return {'item': item, 'annotation': note,
+                **({'history': selected_history} if include_history else {}),
+                'nativeFile': str(self.root / self.relative(file)) if file else None}
 
     def item_fingerprint(self, item, require_records=False, result=None):
         result = result if result is not None else self.changes(item['scope'])
@@ -877,6 +878,7 @@ class ReviewStore(RoundStore):
         # A scoped panel must never inherit a plan from another comparison
         # scope. Round panels also expose their immutable target metadata.
         if target_round or (scope and scope.get('source')):
+            scope_key = state['scopes'][0].get('key') if len(state['scopes']) == 1 else None
             item_ids = {i['id'] for i in state['items']}
             annotation_ids = {n['id'] for n in state['annotations']}
             plan_items = set(workflow.get('itemIds', []))
@@ -886,7 +888,8 @@ class ReviewStore(RoundStore):
                 workflow = {'status': 'feedback_ready' if item_ids or annotation_ids else 'no_feedback',
                             'mayApply': False,
                             'instruction': '读取意见后先给出具体修改方案，等待用户明确确认。'}
-            state = {'revision': state['revision'], 'items': state['items'],
+            state = {'revision': state['revision'], 'scopeKey': scope_key,
+                     'items': state['items'],
                      'annotations': state['annotations'], 'guides': state['guides'],
                      'workflow': workflow}
             if target_round:

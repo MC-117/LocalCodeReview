@@ -181,11 +181,40 @@ async function ensureSaved(){
   if(savePromise)await savePromise;
   while(receipts.length&&(dirty||receipts.some(r=>!r.id)))await save();
 }
+function feedbackRefs(entry){
+  return (entry.refs||[]).map(r=>r.path+(r.line?':'+r.line+(r.end&&r.end>r.line?'-'+r.end:''):'')).join(', ');
+}
+function buildFeedbackMessage(){
+  const targetRound=scope.source==='round'?scope.round:null;
+  const scopeKey=state.scopeKey||state.scopes?.find(s=>equal(s.scope,scope))?.key;
+  const scopeRef=targetRound?'roundId='+targetRound:scopeKey?'scopeKey='+scopeKey:'scope='+JSON.stringify(scope);
+  const lines=[I18n.t('Local Review feedback; projectRoot={0}; {1}; revision={2}.', [JSON.stringify(meta.root),scopeRef,state.revision])];
+  const opinions=notes().filter(n=>n.text?.trim());
+  for(const note of opinions){
+    const refs=[feedbackRefs(note),note.target?.label].filter(Boolean).join(' · ');
+    lines.push(I18n.t('R{0} [{1}]{2}: {3}',[note.id,refs,note.stale?I18n.t(' (定位需复核)'):'',note.text.trim()]));
+  }
+  const legacy=state.items.filter(i=>!i.groupKey?.startsWith('file-receipt:')&&i.notes?.trim()&&i.status!=='withdrawn');
+  for(const item of legacy){
+    lines.push(I18n.t('旧版意见 #{0} [{1}] {2}: {3}',[item.id,feedbackRefs(item)||item.title,item.status||'',item.notes.trim()]));
+  }
+  const pending=receipts.filter(r=>r.status!=='approved'||r.stale);
+  for(const receipt of pending){
+    const status=receipt.stale?I18n.t('需复核'):receipt.status==='changes'?I18n.t('需修改'):I18n.t('待审查');
+    lines.push(I18n.t('{0} #{1} [{2}]',[status,receipt.id??'?',feedbackRefs(receipt)||receipt.title]));
+  }
+  if(opinions.length||legacy.length||pending.length){
+    lines.push(I18n.t('请结合本对话和相关代码提出具体修改方案；此消息不是修改授权，先等我在聊天中确认方案。'));
+  }else{
+    lines.push(I18n.t('当前范围没有待处理意见或未通过项。不要读取完整 review_results，也不要提出修改方案。'));
+  }
+  return lines.join('\n');
+}
 async function submitFeedback(){
   if(submitting)return;submitting=true;renderItems();renderEditor();
   try{
     await ensureSaved();
-    await ReviewHost.message(I18n.t("请读取审查项目 ")+JSON.stringify(meta.root)+I18n.t(" 的 .code-review 中已保存的审查意见，结合本对话和相关代码提出具体修改方案。先等我在聊天中确认方案，再修改代码。"));
+    await ReviewHost.message(buildFeedbackMessage());
     toast(I18n.t("意见已提交；助手先提方案，等你确认后再修改。"));
   }finally{submitting=false;renderItems();renderEditor();}
 }

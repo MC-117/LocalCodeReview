@@ -209,11 +209,13 @@ class RoundTests(unittest.TestCase):
     def test_mcp_round_tools_capture_endpoints_over_real_stdio(self):
         process = subprocess.Popen([sys.executable,str(BASE/'server.py'),'--mcp','--sessions',str(self.logs)],
                                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8')
-        def call(name,args):
+        def call_result(name,args):
             process.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':name,'arguments':{'projectRoot':str(self.root),**args}}})+'\n');process.stdin.flush()
             reply = json.loads(process.stdout.readline())
             self.assertNotIn('error',reply)
-            return reply['result']['structuredContent']
+            return reply['result']
+        def call(name,args):
+            return call_result(name,args)['structuredContent']
         try:
             r = call('review_round',{'action':'begin','threadId':'chat'})
             self.write('src/example.py','value = 2\n')
@@ -236,10 +238,41 @@ class RoundTests(unittest.TestCase):
             self.assertEqual(len(compact_changes['records']),1)
             self.assertIn('patch',compact_changes['records'][0])
             self.assertIn('value = 2',compact_changes['records'][0]['patch'])
-            opened = call('review_open',{'threadId':'chat','query':{'source':'round','round':'latest'}})
-            self.assertEqual(opened['reviewScope']['query']['round'],r['id'])
+            summary = call('review_changes',{'query':{'source':'round','round':r['id'],'summaryOnly':True}})
+            self.assertEqual(summary['records'][0]['path'],'src/example.py')
+            self.assertNotIn('patch',summary['records'][0])
+            self.assertEqual(summary['records'][0]['action'],'Update')
+            guide_state = call('review_guides',{'roundId':r['id']})
+            self.assertEqual(guide_state['revision'],0)
+            self.assertEqual(guide_state['guides'],[])
+            guide_saved = call('review_set_guide',{'revision':guide_state['revision'],
+                'query':{'source':'round','round':r['id']},
+                'groups':[{'key':'example','title':'Example','refs':[{'path':'src/example.py'}]}]})
+            self.assertEqual(guide_saved['guideCount'],1)
+            self.assertNotIn('items',guide_saved)
+            pending = call('review_save_item',{'item':{'revision':guide_saved['revision'],
+                'title':'Fix example','purpose':'','validation':'未验证','notes':'修复此处',
+                'status':'changes','scope':{'source':'round','round':r['id']},
+                'refs':[{'path':'src/example.py'}]}})
+            feedback = call('review_feedback',{'roundId':r['id']})
+            self.assertEqual(feedback['revision'],pending['revision'])
+            self.assertEqual(feedback['items'][0]['notes'],'修复此处')
+            self.assertNotIn('guides',feedback)
+            self.assertNotIn('workflow',feedback)
+            opened = call_result('review_open',{'threadId':'chat','query':{'source':'round','round':'latest'}})
+            self.assertEqual(opened['structuredContent'],{'presentation':'mcp-app'})
+            self.assertEqual(opened['_meta']['reviewScope']['query']['round'],r['id'])
+            self.assertNotIn(r['id'],opened['content'][0]['text'])
             results = call('review_results',{'roundId':r['id']})
             self.assertEqual(results['targetRound']['id'],r['id'])
             self.assertEqual(results['annotations'],[])
+            self.assertIn('items', results)
+            self.assertNotIn('guides', results)
+            all_results = call('review_results',{'roundId':r['id'],'detail':'all'})
+            self.assertIn('guides', all_results)
+            self.assertIn('workflow', all_results)
+            result_wire = call_result('review_results',{'roundId':r['id']})
+            self.assertEqual(result_wire['content'][0]['text'],'Review results loaded.')
+            self.assertNotIn('"annotations"',result_wire['content'][0]['text'])
         finally:
             process.stdin.close();process.wait(timeout=10);process.stdout.close();process.stderr.close()

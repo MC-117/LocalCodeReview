@@ -70,6 +70,60 @@ def _add_review_refs(store, value):
     return result
 
 
+def _review_result_view(store, round_id, detail='feedback'):
+    """Keep the assistant-facing default small; the MCP App reads full state itself."""
+    full = _add_review_refs(store, store.review_view(round_id=round_id))
+    if detail == 'all':
+        return full
+    target = full.get('targetRound')
+    if detail == 'guides':
+        return {'roundId': round_id, 'revision': full.get('revision', 0),
+                'targetRound': target, 'guides': [
+                    {key: guide[key] for key in ('key', 'title', 'purpose', 'validation', 'refs') if key in guide}
+                    for guide in full.get('guides', [])]}
+    if detail == 'workflow':
+        workflow = full.get('workflow') or {}
+        return {'roundId': round_id, 'revision': full.get('revision', 0),
+                'targetRound': target,
+                'workflow': {key: workflow[key] for key in
+                             ('id', 'status', 'reviewRevision', 'itemIds', 'annotationIds', 'text', 'reason')
+                             if key in workflow}}
+    if detail != 'feedback':
+        raise ValueError('review_results detail 必须是 feedback、guides、workflow 或 all')
+    items = [item for item in full.get('items', [])
+             if item.get('status') != 'approved' or item.get('stale') or item.get('notes')]
+    annotations = [note for note in full.get('annotations', []) if note.get('status') != 'withdrawn']
+    return {'roundId': round_id, 'revision': full.get('revision', 0),
+            'targetRound': target, 'items': items, 'annotations': annotations,
+            'itemCount': len(items), 'annotationCount': len(annotations)}
+
+
+def _tool_content(name, value):
+    """Do not duplicate structured JSON in the text content sent to the model."""
+    if isinstance(value, str):
+        return value
+    labels = {
+        'review_open': 'Review panel opened.',
+        'review_ui_request': 'Review UI request completed.',
+        'review_sources': 'Review sources loaded.',
+        'review_changes': 'Review changes loaded.',
+        'review_context': 'Review context loaded.',
+        'review_feedback': 'Review feedback loaded.',
+        'review_guides': 'Review guides loaded.',
+        'review_results': 'Review results loaded.',
+        'review_set_guide': 'Review guide saved.',
+        'review_save_item': 'Review item saved.',
+        'review_round': 'Review round recorded.',
+        'review_snapshot': 'Review snapshot recorded.',
+        'review_export': 'Review export ready.',
+        'review_propose_plan': 'Review plan recorded.',
+        'review_confirm_plan': 'Review plan confirmation recorded.',
+        'review_begin_changes': 'Review changes started.',
+        'review_finish_changes': 'Review changes finished.',
+    }
+    return labels.get(name, 'Review operation completed.')
+
+
 def _compact_snapshot(manifest, include_files=False):
     if include_files:
         return manifest
@@ -242,7 +296,8 @@ def mcp(projects):
                                              'turnTime', 'status', 'changedFiles') if key in value}
     catalog = [
         entry('review_open', '在对话中显示本地代码审查 MCP Apps 界面。不要再打开浏览器标签。仅当宿主不支持 UI 且用户需要网页时传 browserFallback=true。', {'browserFallback': {'type': 'boolean', 'default': False}, 'threadId': {'type':'string','description':'当前对话编号，从可信上下文或 CODEX_THREAD_ID 读取，不能用项目最近会话代替。'}, 'query': {'type':'object','description':'助手根据上下文选定的 source/round/session/turnId/snapshot/start/end/include/exclude/defaults/attempts。source=round 使用固定两端；round=latest 在精确 threadId 内解析并固定最近修改轮。'}, 'reason': {'type':'string','description':'向用户说明选择此比较范围的依据。'}}),
-        entry('review_context', '读取索引选定的完整意见和原生文件定位。必须提供 itemId，并同时提供 roundId 或 scopeKey，不能只凭裸编号定位。查看意见后先提出方案，等用户确认再改代码。', {'itemId': {'type': 'integer', 'minimum': 1}, 'roundId': {'type': 'string'}, 'scopeKey': {'type': 'string'}, 'historyLimit': {'type': 'integer', 'minimum': 1, 'maximum': 500, 'default': 500}}, ['itemId']),
+        entry('review_context', '读取选定意见和原生文件定位；默认不返回历史。只有明确需要追溯旧决策时才传 includeHistory=true。必须同时提供 roundId 或 scopeKey。', {'itemId': {'type': 'integer', 'minimum': 1}, 'roundId': {'type': 'string'}, 'scopeKey': {'type': 'string'}, 'includeHistory': {'type': 'boolean', 'default': False}, 'historyLimit': {'type': 'integer', 'minimum': 1, 'maximum': 50, 'default': 10}}, ['itemId']),
+        entry('review_feedback', '仅读取指定范围的有效用户意见、带意见的旧审查项和未通过/已过期审查项；不返回通过记录、导览、方案或代码。可按 ID 筛选并分页。', {'roundId': {'type': 'string'}, 'scopeKey': {'type': 'string'}, 'annotationIds': {'type': 'array', 'items': {'type': 'integer'}}, 'itemIds': {'type': 'array', 'items': {'type': 'integer'}}, 'offset': {'type': 'integer', 'minimum': 0, 'default': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50, 'default': 20}}),
         entry('review_sources', '分层浏览审查来源。默认只返回短索引；用 level=sessions/snapshots/rounds 分页列目录，用 level=turns 和 sessionId 分页列某日志段的轮次，用 level=turn 或 level=round 加精确 ID 读取一个目标。threadId 精确匹配当前对话。', {
             'threadId': {'type':'string'},
             'level': {'type':'string', 'enum':['index','sessions','snapshots','rounds','reviews','turns','turn','round'], 'default':'index'},
@@ -250,8 +305,9 @@ def mcp(projects):
             'offset': {'type':'integer', 'minimum':0, 'default':0},
             'limit': {'type':'integer', 'minimum':1, 'maximum':50, 'default':20}
         }),
-        entry('review_changes', '读取完整的会话补丁或固定快照差异。必须先从 review_sources 索引选择精确目标：source=round 时传 round ID，source=session 时传 session + turnId，source=snapshot 时传 snapshot ID；宽泛查询会被拒绝。可再用 include 缩小到某文件。历史会话操作不等于当前净差异。', {'query': {'type': 'object', 'description': '必须包含精确目标；不分页、不截断补丁。'}}, ['query']),
-        entry('review_results', '只读取指定已完成审查轮的完整用户意见、稳定编号、过期标记、功能导览和该轮关联方案。必须先从 review_sources 索引取得 roundId；不会返回其它轮次或对话的内容。', {'roundId': {'type': 'string', 'description': '目标已完成审查轮 ID；先从 review_sources 获取。'}}, ['roundId']),
+        entry('review_changes', '读取精确目标的变更。默认返回完整补丁；若只需变更文件和操作类型来整理导览，在 query 中传 summaryOnly=true，省略补丁内容。必须提供 source=round + round ID、source=session + session/turnId，或 source=snapshot + snapshot ID；宽泛查询会被拒绝。可用 include/exclude 缩小文件范围。', {'query': {'type': 'object', 'description': '精确目标；summaryOnly=true 时只返回变更文件摘要，不含 patch。'}}, ['query']),
+        entry('review_guides', '读取指定轮次的审查版本号和功能导览；不返回审查项、用户意见或方案。用于打开审查页前复用导览并提交更新。', {'roundId': {'type': 'string', 'description': '精确的已完成轮次 ID；优先使用 review_round(finish) 返回的 ID。'}}, ['roundId']),
+        entry('review_results', '读取指定已完成审查轮的审查状态。默认只返回有效意见和未通过项；用 detail=guides、workflow 或 all 才读取对应完整部分。通常读取意见请用 review_feedback。', {'roundId': {'type': 'string', 'description': '目标已完成轮次 ID。'}, 'detail': {'type': 'string', 'enum': ['feedback', 'guides', 'workflow', 'all'], 'default': 'feedback'}}, ['roundId']),
         entry('review_save_item', '保存审查项，需最新 revision；不修改代码，不将助手自检冒充用户意见。', {'item': {'type': 'object'}}, ['item']),
         entry('review_set_guide', '根据本轮修改和对话上下文整理功能导览，关联跨目录文件并提供目的和真实验证结果。不是用户批注，不自动通过审查。相同范围按组 key 更新，意见编号保持独立。', {'revision': {'type': 'integer'}, 'query': {'type': 'object'}, 'groups': {'type': 'array', 'items': {'type': 'object'}}}, ['revision', 'query', 'groups']),
         entry('review_snapshot', '修改前记录文本快照，不依赖 Git 提交。默认只返回快照索引；需要文件哈希表时显式传 includeFiles=true。', {'name': {'type': 'string'}, 'includeFiles': {'type': 'boolean', 'default': False}}, ['name']),
@@ -267,7 +323,7 @@ def mcp(projects):
     catalog[-1]['_meta'] = {'ui': {'visibility': ['app']}}
     # Saving local opinions is reversible; it never authorizes project code edits.
     for tool in catalog:
-        tool['annotations'] = {'readOnlyHint': tool['name'] in {'review_open', 'review_context', 'review_sources', 'review_changes', 'review_results'},
+        tool['annotations'] = {'readOnlyHint': tool['name'] in {'review_open', 'review_context', 'review_sources', 'review_changes', 'review_guides', 'review_feedback', 'review_results'},
                                'destructiveHint': False, 'openWorldHint': False}
     for line in sys.stdin:
         request = None
@@ -299,7 +355,7 @@ def mcp(projects):
                         view = store.review_scope(args.get('threadId'), args.get('query'), args.get('reason'))
                         view_token = secrets.token_urlsafe(32)
                         app.views[view_token] = view
-                        value = {'projectRoot': str(store.root), 'presentation': 'mcp-app', 'reviewScope': view}
+                        value = {'presentation': 'mcp-app'}
                         if args.get('browserFallback'):
                             value.update({k: v + ('&' if '?' in v else '?') + 'view=' + view_token for k, v in app.browser_fallback().items()})
                     elif name == 'review_ui_request':
@@ -312,7 +368,9 @@ def mcp(projects):
                         if not args.get('itemId') or bool(round_id) == bool(scope_key):
                             raise ValueError('review_context 必须同时提供 itemId 和且仅一个 roundId 或 scopeKey')
                         scope = store.review_scope_for_key(scope_key) if scope_key else None
-                        value = store.context(args['itemId'], args.get('historyLimit', 500), scope=scope, round_id=round_id)
+                        value = store.context(args['itemId'], args.get('historyLimit', 10),
+                                              include_history=args.get('includeHistory', False),
+                                              scope=scope, round_id=round_id)
                         if value.get('item'):
                             value['item'] = {**value['item'], 'reviewRef': _review_ref(store, value['item'], 'item')}
                         if value.get('annotation'):
@@ -383,12 +441,55 @@ def mcp(projects):
                     elif name == 'review_changes':
                         _require_precise_changes(args['query'])
                         value = store.changes(args['query'])
+                        if args['query'].get('summaryOnly'):
+                            value = {**{key: item for key, item in value.items() if key != 'records'},
+                                     'records': [{key: record[key] for key in ('id', 'path', 'action', 'turn', 'turnId', 'time', 'confirmed') if key in record}
+                                                 for record in value['records']]}
+                    elif name == 'review_guides':
+                        target = store.round(args['roundId'])
+                        if target.get('status') != 'completed':
+                            raise ValueError('目标审查轮尚未完成')
+                        state = store.state(round_id=args['roundId'])
+                        value = {'roundId': args['roundId'], 'revision': state['revision'],
+                                 'guides': [{key: group[key] for key in ('key', 'title', 'purpose', 'validation', 'refs') if key in group}
+                                            for group in state['guides']]}
+                    elif name == 'review_feedback':
+                        round_id, scope_key = args.get('roundId'), args.get('scopeKey')
+                        if bool(round_id) == bool(scope_key):
+                            raise ValueError('review_feedback 必须提供且仅提供 roundId 或 scopeKey')
+                        scope = store.review_scope_for_key(scope_key) if scope_key else None
+                        state = store.review_view(round_id=round_id, scope=scope)
+                        annotation_filter = 'annotationIds' in args
+                        item_filter = 'itemIds' in args
+                        annotation_ids = set(args.get('annotationIds', []))
+                        item_ids = set(args.get('itemIds', []))
+                        annotations = [n for n in state['annotations']
+                                       if n.get('status') != 'withdrawn'
+                                       and (not annotation_filter or n['id'] in annotation_ids)]
+                        items = [i for i in state['items']
+                                 if (not item_filter or i['id'] in item_ids)
+                                 and ((not i.get('groupKey', '').startswith('file-receipt:') and i.get('notes'))
+                                      or i.get('status') != 'approved' or i.get('stale'))]
+                        offset = int(args.get('offset', 0))
+                        limit = min(50, int(args.get('limit', 20)))
+                        if offset < 0 or limit < 1:
+                            raise ValueError('offset 必须大于等于 0，limit 必须在 1 到 50 之间')
+                        annotation_page, item_page = annotations[offset:offset + limit], items[offset:offset + limit]
+                        value = {'revision': state['revision'], 'roundId': round_id, 'scopeKey': scope_key,
+                                 'annotations': [{key: note[key] for key in ('id', 'text', 'target', 'refs', 'status', 'stale') if key in note}
+                                                 | {'reviewRef': _review_ref(store, note, 'annotation')} for note in annotation_page],
+                                 'items': [{key: item[key] for key in ('id', 'title', 'notes', 'refs', 'status', 'stale') if key in item}
+                                           | {'reviewRef': _review_ref(store, item, 'item')} for item in item_page],
+                                 'annotationCount': len(annotations), 'itemCount': len(items),
+                                 'offset': offset, 'limit': limit,
+                                 'nextOffset': offset + limit if offset + limit < max(len(annotations), len(items)) else None}
                     elif name == 'review_results':
-                        value = _add_review_refs(store, store.review_view(round_id=args['roundId']))
+                        value = _review_result_view(store, args['roundId'], args.get('detail', 'feedback'))
                     elif name == 'review_save_item':
                         value = _compact_review(store.save_item(args['item']), args)
                     elif name == 'review_set_guide':
-                        value = _compact_review(store.save_guide(args['revision'], args['query'], args['groups']), args)
+                        saved = store.save_guide(args['revision'], args['query'], args['groups'])
+                        value = {'revision': saved['revision'], 'guideCount': len(saved['guides'])}
                     elif name == 'review_snapshot':
                         value = _compact_snapshot(store.capture(args['name']), args.get('includeFiles', False))
                     elif name == 'review_round':
@@ -411,11 +512,12 @@ def mcp(projects):
                         value = store.begin_changes(args['planId'])
                     elif name == 'review_finish_changes':
                         value = store.finish_changes(args['planId'], args['summary'], args['validation'])
-                result = {'content': [{'type': 'text', 'text': value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)}]}
+                result = {'content': [{'type': 'text', 'text': _tool_content(name, value)}]}
                 if isinstance(value, dict):
                     result['structuredContent'] = value
                 if name == 'review_open':
-                    result['_meta'] = {'reviewContext': {'projectRoot': str(store.root), 'viewToken': view_token}}
+                    result['_meta'] = {'reviewContext': {'projectRoot': str(store.root), 'viewToken': view_token},
+                                       'reviewScope': view}
             else:
                 print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'Method not found'}}), flush=True)
                 continue

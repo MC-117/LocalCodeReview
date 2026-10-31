@@ -231,10 +231,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(p.returncode,0,p.stderr)
         replies=[json.loads(line) for line in p.stdout.splitlines()]
         self.assertEqual([r['id'] for r in replies],[1,2,3,4])
-        self.assertEqual(len(replies[1]['result']['tools']),15)
+        self.assertEqual(len(replies[1]['result']['tools']),17)
         self.assertTrue(all('projectRoot' in t['inputSchema']['required'] for t in replies[1]['result']['tools']))
         results_tool = next(t for t in replies[1]['result']['tools'] if t['name'] == 'review_results')
         self.assertIn('roundId', results_tool['inputSchema']['required'])
+        self.assertIn('review_feedback', {t['name'] for t in replies[1]['result']['tools']})
+        self.assertIn('review_guides', {t['name'] for t in replies[1]['result']['tools']})
         self.assertIn('error',replies[2])
         self.assertIn('error',replies[3])
         self.assertTrue((self.root/'.code-review/.gitignore').exists())

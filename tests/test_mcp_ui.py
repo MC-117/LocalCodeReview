@@ -54,8 +54,11 @@ class McpUiTests(unittest.TestCase):
         self.assertEqual(tools['review_ui_request']['_meta']['ui']['visibility'], ['app'])
         self.assertIn('error', replies[4])
         render = replies[5]['result']
+        self.assertEqual(render['content'][0]['text'], 'Review panel opened.')
         self.assertNotIn('viewToken', render['content'][0]['text'])
         self.assertNotIn('url', render['structuredContent'])
+        self.assertEqual(render['structuredContent'], {'presentation': 'mcp-app'})
+        self.assertTrue(render['_meta']['reviewScope'])
         self.assertTrue(render['_meta']['reviewContext']['viewToken'])
         self.assertIn('error', replies[6])
         self.assertNotIn('http://', process.stderr)

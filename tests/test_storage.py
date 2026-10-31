@@ -39,7 +39,8 @@ class StorageTests(unittest.TestCase):
         self.assertGreaterEqual(len(history_path.read_text(encoding='utf-8').splitlines()), 2)
         self.assertNotIn('history', state['items'][0])
         self.assertNotIn('history', self.store.review_view()['items'][0])
-        self.assertEqual(len(self.store.context(item_id=1)['history']), 2)
+        self.assertNotIn('history', self.store.context(item_id=1))
+        self.assertEqual(len(self.store.context(item_id=1, include_history=True)['history']), 2)
         self.assertEqual(len(self.store.history('items', 1, limit=1)), 1)
 
     def test_annotation_history_is_separate_and_selected_context_is_explicit(self):
@@ -58,7 +59,8 @@ class StorageTests(unittest.TestCase):
         self.assertTrue((self.store.data / 'history' / 'annotations' / '1.jsonl').exists())
         self.assertNotIn('history', self.store.review_view()['annotations'][0])
         self.store.select({'annotationId': 1})
-        self.assertEqual(len(self.store.context()['history']), 2)
+        self.assertNotIn('history', self.store.context())
+        self.assertEqual(len(self.store.context(include_history=True)['history']), 2)
 
     def test_development_inline_history_is_split_on_first_open(self):
         data = self.root / '.code-review'
